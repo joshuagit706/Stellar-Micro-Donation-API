@@ -29,4 +29,8 @@ const getStellarService = () => {
 module.exports = {
   getStellarService,
   useMockStellar,
+  port: process.env.PORT || 3000,
+  network: process.env.STELLAR_NETWORK || 'testnet',
+  horizonUrl: process.env.HORIZON_URL || 'https://horizon-testnet.stellar.org',
+  dbPath: process.env.DB_PATH || './data/donations.json',
 };
