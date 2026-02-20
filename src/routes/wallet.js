@@ -1,12 +1,13 @@
 const express = require('express');
 const router = express.Router();
 const Wallet = require('./models/wallet');
+const requireApiKey = require('../middleware/apiKeyMiddleware');
 
 /**
  * POST /wallets
  * Create a new wallet with metadata
  */
-router.post('/', (req, res) => {
+router.post('/', requireApiKey, (req, res) => {
   try {
     const { address, label, ownerName } = req.body;
 
@@ -87,7 +88,7 @@ router.get('/:id', (req, res) => {
  * PATCH /wallets/:id
  * Update wallet metadata
  */
-router.patch('/:id', (req, res) => {
+router.patch('/:id', requireApiKey, (req, res) => {
   try {
     const { label, ownerName } = req.body;
 

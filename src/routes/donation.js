@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const StellarService = require('../services/StellarService');
 const Transaction = require('./models/transaction');
+const requireApiKey = require('../middleware/apiKeyMiddleware');
 
 const stellarService = new StellarService({
   network: process.env.STELLAR_NETWORK || 'testnet',
@@ -12,7 +13,7 @@ const stellarService = new StellarService({
  * POST /api/v1/donation/verify
  * Verify a donation transaction by hash
  */
-router.post('/verify', async (req, res) => {
+router.post('/verify', requireApiKey, async (req, res) => {
   try {
     const { transactionHash } = req.body;
 
@@ -48,7 +49,7 @@ router.post('/verify', async (req, res) => {
  * POST /donations
  * Create a new donation
  */
-router.post('/', (req, res) => {
+router.post('/', requireApiKey, (req, res) => {
   try {
 
     const idempotencyKey = req.headers['idempotency-key'];

@@ -3,7 +3,7 @@
  * Handles both real and mock Stellar service initialization
  */
 
-require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
+require('dotenv').config({ path: require('path').join(__dirname, '../../.env') });
 
 const StellarService = require('../services/StellarService');
 const MockStellarService = require('../services/MockStellarService');
