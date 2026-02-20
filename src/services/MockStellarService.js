@@ -131,18 +131,16 @@ class MockStellarService {
      * @param {string} params.sourceSecret - Source account secret key
      * @param {string} params.destinationPublic - Destination public key
      * @param {string} params.amount - Amount in XLM
-     * @param {string} params.memo - Transaction memo
+     * @param {string} [params.memo] - Optional transaction memo (max 28 bytes)
      * @returns {Promise<{transactionId: string, ledger: number}>}
      */
-    async sendDonation({ sourceSecret, destinationPublic, amount, memo }) {
-      return StellarErrorHandler.wrap(async () => {
-        // Find source wallet by secret key
-        let sourceWallet = null;
-        for (const wallet of this.wallets.values()) {
-          if (wallet.secretKey === sourceSecret) {
-            sourceWallet = wallet;
-            break;
-          }
+    async sendDonation({ sourceSecret, destinationPublic, amount, memo = '' }) {
+      // Find source wallet by secret key
+      let sourceWallet = null;
+      for (const wallet of this.wallets.values()) {
+        if (wallet.secretKey === sourceSecret) {
+          sourceWallet = wallet;
+          break;
         }
 
         if (!sourceWallet) {
@@ -175,22 +173,18 @@ class MockStellarService {
           throw new Error('Insufficient balance to complete this transaction');
         }
 
-        // Update balances
-        sourceWallet.balance = (sourceBalance - amountNum).toFixed(7);
-        destWallet.balance = (destBalance + amountNum).toFixed(7);
-
-        // Create transaction record
-        const txRecord = {
-          transactionId: 'mock_' + crypto.randomBytes(16).toString('hex'),
-          source: sourceWallet.publicKey,
-          destination: destinationPublic,
-          amount,
-          memo,
-          timestamp: new Date().toISOString(),
-          ledger: Math.floor(Math.random() * 1000000) + 1000000,
-          status: 'confirmed',
-          confirmedAt: new Date().toISOString(),
-        };
+    // Create transaction record
+    const txRecord = {
+      transactionId: 'mock_' + crypto.randomBytes(16).toString('hex'),
+      source: sourceWallet.publicKey,
+      destination: destinationPublic,
+      amount,
+      memo: memo || '',
+      timestamp: new Date().toISOString(),
+      ledger: Math.floor(Math.random() * 1000000) + 1000000,
+      status: 'confirmed',
+      confirmedAt: new Date().toISOString(),
+    };
 
         // Store transaction for both accounts
         if (!this.transactions.has(sourceWallet.publicKey)) {
