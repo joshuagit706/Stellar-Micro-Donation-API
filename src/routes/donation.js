@@ -1,6 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const Transaction = require('./models/transaction');
+const requireApiKey = require('../middleware/apiKeyMiddleware');
+
+const stellarService = new StellarService({
+  network: process.env.STELLAR_NETWORK || 'testnet',
+  horizonUrl: process.env.HORIZON_URL || 'https://horizon-testnet.stellar.org'
+});
 const donationValidator = require('../utils/donationValidator');
 const memoValidator = require('../utils/memoValidator');
 const { calculateAnalyticsFee } = require('../utils/feeCalculator');
@@ -13,7 +19,7 @@ const stellarService = new MockStellarService();
  * POST /api/v1/donation/verify
  * Verify a donation transaction by hash
  */
-router.post('/verify', async (req, res) => {
+router.post('/verify', requireApiKey, async (req, res) => {
   try {
     const { transactionHash } = req.body;
 
@@ -49,16 +55,17 @@ router.post('/verify', async (req, res) => {
   }
 });
 
+
 /**
  * POST /donations
  * Create a new donation
  */
-router.post('/', (req, res) => {
+router.post('/', requireApiKey, (req, res) => {
   try {
 
     const idempotencyKey = req.headers['idempotency-key'];
 
-     if (!idempotencyKey) {
+    if (!idempotencyKey) {
       return res.status(400).json({
         success: false,
         error: {
@@ -235,7 +242,7 @@ router.get('/recent', (req, res) => {
     }
 
     const transactions = Transaction.getAll();
-    
+
     // Sort by timestamp descending (most recent first)
     const sortedTransactions = transactions
       .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
@@ -272,7 +279,7 @@ router.get('/recent', (req, res) => {
 router.get('/:id', (req, res) => {
   try {
     const transaction = Transaction.getById(req.params.id);
-    
+
     if (!transaction) {
       return res.status(404).json({
         error: 'Donation not found'
