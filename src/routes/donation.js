@@ -16,7 +16,7 @@ const stellarService = getStellarService();
  * POST /donations
  * Create a new donation
  */
-router.post('/verify', requireApiKey, async (req, res) => {
+router.post('/verify', checkPermission(PERMISSIONS.DONATIONS_VERIFY), async (req, res) => {
   try {
     const { transactionHash } = req.body;
 
@@ -154,14 +154,8 @@ router.post('/send', requireIdempotency, async (req, res) => {
 });
 
 /**
-<<<<<<< feature/idempotency-donations
- * POST /donations
- * Create a new donation
- * Requires idempotency key to prevent duplicate processing
-=======
  * POST /donations/verify
  * Verify a donation transaction by hash
->>>>>>> main
  */
 router.post('/', requireApiKey, requireIdempotency, async (req, res, next) => {
   try {
@@ -264,26 +258,11 @@ router.post('/', requireApiKey, requireIdempotency, async (req, res, next) => {
 
     const response = {
       success: true,
-<<<<<<< feature/idempotency-donations
-      data: transaction
-    };
-
-    // Store idempotency response for future duplicate requests
-    await storeIdempotencyResponse(req, response);
-
-    // Add warning if duplicate request was detected
-    if (req.idempotencyWarning) {
-      response.warning = req.idempotencyWarning;
-    }
-
-    res.status(201).json(response);
-=======
       data: {
         verified: true,
         transactionHash
       }
     });
->>>>>>> main
   } catch (error) {
     next(error);
   }
@@ -293,7 +272,7 @@ router.post('/', requireApiKey, requireIdempotency, async (req, res, next) => {
  * GET /donations
  * Get all donations
  */
-router.get('/', (req, res, next) => {
+router.get('/', checkPermission(PERMISSIONS.DONATIONS_READ), (req, res, next) => {
   try {
     const transactions = Transaction.getAll();
     res.json({
@@ -310,7 +289,7 @@ router.get('/', (req, res, next) => {
  * GET /donations/limits
  * Get current donation amount limits
  */
-router.get('/limits', (req, res) => {
+router.get('/limits', checkPermission(PERMISSIONS.DONATIONS_READ), (req, res) => {
   try {
     const limits = donationValidator.getLimits();
     res.json({
@@ -336,7 +315,7 @@ router.get('/limits', (req, res) => {
  * Query params:
  *   - limit: number of recent donations to return (default: 10, max: 100)
  */
-router.get('/recent', (req, res, next) => {
+router.get('/recent', checkPermission(PERMISSIONS.DONATIONS_READ), (req, res, next) => {
   try {
     const limit = Math.min(parseInt(req.query.limit) || 10, 100);
 
@@ -376,7 +355,7 @@ router.get('/recent', (req, res, next) => {
  * GET /donations/:id
  * Get a specific donation
  */
-router.get('/:id', (req, res, next) => {
+router.get('/:id', checkPermission(PERMISSIONS.DONATIONS_READ), (req, res, next) => {
   try {
     const transaction = Transaction.getById(req.params.id);
 
@@ -397,7 +376,7 @@ router.get('/:id', (req, res, next) => {
  * PATCH /donations/:id/status
  * Update donation transaction status
  */
-router.patch('/:id/status', async (req, res, next) => {
+router.patch('/:id/status', checkPermission(PERMISSIONS.DONATIONS_UPDATE), async (req, res, next) => {
   try {
     const { id } = req.params;
     const { status, stellarTxId, ledger } = req.body;

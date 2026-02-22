@@ -178,7 +178,7 @@ router.get('/recipients', validateDateRange, (req, res) => {
  * Get analytics fee summary for reporting
  * Query params: startDate, endDate (ISO format)
  */
-router.get('/analytics-fees', (req, res) => {
+router.get('/analytics-fees', checkPermission(PERMISSIONS.STATS_READ), (req, res) => {
   try {
     const { startDate, endDate } = req.query;
 
@@ -225,7 +225,7 @@ router.get('/analytics-fees', (req, res) => {
  * Get donation analytics for a specific wallet
  * Query params: startDate, endDate (optional, ISO format)
  */
-router.get('/wallet/:walletAddress/analytics', (req, res) => {
+router.get('/wallet/:walletAddress/analytics', checkPermission(PERMISSIONS.STATS_READ), (req, res) => {
   try {
     const { walletAddress } = req.params;
     const { startDate, endDate } = req.query;
