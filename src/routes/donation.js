@@ -12,8 +12,8 @@ const { calculateAnalyticsFee } = require('../utils/feeCalculator');
 const stellarService = getStellarService();
 
 /**
- * POST /api/v1/donation/verify
- * Verify a donation transaction by hash
+ * POST /donations
+ * Create a new donation
  */
 router.post('/verify', requireApiKey, async (req, res) => {
   try {
@@ -23,11 +23,15 @@ router.post('/verify', requireApiKey, async (req, res) => {
       throw new ValidationError('Transaction hash is required', null, ERROR_CODES.INVALID_REQUEST);
     }
 
-    const result = await stellarService.verifyTransaction(transactionHash);
+    const transaction = Transaction.create({
+      amount: parseFloat(amount),
+      donor: donor || 'Anonymous',
+      recipient
+    });
 
-    res.json({
+    res.status(201).json({
       success: true,
-      data: result
+      data: transaction
     });
   } catch (error) {
     // Handle Stellar errors with proper status codes
@@ -143,8 +147,8 @@ router.post('/send', async (req, res) => {
 });
 
 /**
- * POST /donations
- * Create a new donation
+ * POST /donations/verify
+ * Verify a donation transaction by hash
  */
 router.post('/', requireApiKey, (req, res) => {
   try {
@@ -258,7 +262,10 @@ router.post('/', requireApiKey, (req, res) => {
 
     res.status(201).json({
       success: true,
-      data: transaction
+      data: {
+        verified: true,
+        transactionHash
+      }
     });
   } catch (error) {
     next(error);
