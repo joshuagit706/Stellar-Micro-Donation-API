@@ -1,9 +1,9 @@
 const express = require('express');
 const router = express.Router();
 const Database = require('../utils/database');
-const { checkPermission } = require('../middleware/rbacMiddleware');
+const { checkPermission } = require('../middleware/rbac');
 const { PERMISSIONS } = require('../utils/permissions');
-const { validateRequiredFields, validateFloat, validateEnum } = require('../utils/validationHelpers');
+const { VALID_FREQUENCIES, SCHEDULE_STATUS } = require('../constants');
 const log = require('../utils/log');
 
 /**
@@ -37,12 +37,10 @@ router.post('/create', checkPermission(PERMISSIONS.STREAM_CREATE), async (req, r
     }
 
     // Validate frequency
-    const validFrequencies = ['daily', 'weekly', 'monthly'];
-    const frequencyValidation = validateEnum(frequency, validFrequencies, { caseInsensitive: true });
-    if (!frequencyValidation.valid) {
+    if (!VALID_FREQUENCIES.includes(frequency.toLowerCase())) {
       return res.status(400).json({
         success: false,
-        error: frequencyValidation.error
+        error: `Frequency must be one of: ${VALID_FREQUENCIES.join(', ')}`
       });
     }
 
@@ -101,7 +99,7 @@ router.post('/create', checkPermission(PERMISSIONS.STREAM_CREATE), async (req, r
       `INSERT INTO recurring_donations 
        (donorId, recipientId, amount, frequency, nextExecutionDate, status) 
        VALUES (?, ?, ?, ?, ?, ?)`,
-      [donor.id, recipient.id, parseFloat(amount), frequency.toLowerCase(), nextExecutionDate.toISOString(), 'active']
+      [donor.id, recipient.id, parseFloat(amount), frequency.toLowerCase(), nextExecutionDate.toISOString(), SCHEDULE_STATUS.ACTIVE]
     );
 
     // Fetch the created schedule
