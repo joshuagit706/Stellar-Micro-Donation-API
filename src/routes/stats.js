@@ -1,6 +1,12 @@
+/**
+ * Stats Routes
+ * Thin controllers that orchestrate service calls
+ * All business logic delegated to StatsService
+ */
+
 const express = require('express');
 const router = express.Router();
-const StatsService = require('./services/StatsService');
+const StatsService = require('../services/StatsService');
 const { validateDateRange } = require('../middleware/validation');
 const { checkPermission } = require('../middleware/rbac');
 const { PERMISSIONS } = require('../utils/permissions');
@@ -170,30 +176,11 @@ router.get(
  * Get analytics fee summary for reporting
  * Query params: startDate, endDate (ISO format)
  */
-router.get('/analytics-fees', checkPermission(PERMISSIONS.STATS_READ), (req, res) => {
+router.get('/analytics-fees', checkPermission(PERMISSIONS.STATS_READ), validateDateRange, (req, res) => {
   try {
     const { startDate, endDate } = req.query;
-
-    if (!startDate || !endDate) {
-      return res.status(400).json({
-        error: 'Missing required query parameters: startDate, endDate (ISO format)'
-      });
-    }
-
     const start = new Date(startDate);
     const end = new Date(endDate);
-
-    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
-      return res.status(400).json({
-        error: 'Invalid date format. Use ISO format (YYYY-MM-DD or ISO 8601)'
-      });
-    }
-
-    if (start > end) {
-      return res.status(400).json({
-        error: 'startDate must be before endDate'
-      });
-    }
 
     const stats = StatsService.getAnalyticsFeeStats(start, end);
 
