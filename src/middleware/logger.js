@@ -213,7 +213,6 @@ class Logger {
   }
 }
 
-const config = require('../config');
 
 const logger = new Logger({
   logToFile: config.logging.toFile,
