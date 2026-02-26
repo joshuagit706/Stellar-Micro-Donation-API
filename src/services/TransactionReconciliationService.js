@@ -1,3 +1,14 @@
+/**
+ * Transaction Reconciliation Service - Data Consistency Layer
+ * 
+ * RESPONSIBILITY: Ensures local transaction state matches blockchain reality
+ * OWNER: Backend Team
+ * DEPENDENCIES: StellarService, Database, Transaction model
+ * 
+ * Background service that periodically verifies pending/submitted transactions against
+ * the Stellar network and updates local state to maintain data consistency.
+ */
+
 const Database = require('../utils/database');
 const Transaction = require('../routes/models/transaction');
 const { TRANSACTION_STATES } = require('../utils/transactionStateMachine');
@@ -20,7 +31,7 @@ class TransactionReconciliationService {
 
     this.isRunning = true;
     this.reconcile();
-    
+
     this.intervalId = setInterval(() => {
       this.reconcile();
     }, this.checkInterval);
@@ -46,12 +57,10 @@ class TransactionReconciliationService {
 
     this.reconciliationInProgress = true;
 
-    const requestId = uuidv4();
-    return log.runWithContext({ requestId }, async () => {
-      try {
-        const pendingTxs = Transaction.getByStatus(TRANSACTION_STATES.PENDING);
-        const submittedTxs = Transaction.getByStatus(TRANSACTION_STATES.SUBMITTED);
-      
+    try {
+      const pendingTxs = Transaction.getByStatus(TRANSACTION_STATES.PENDING);
+      const submittedTxs = Transaction.getByStatus(TRANSACTION_STATES.SUBMITTED);
+
       const txsToCheck = [...pendingTxs, ...submittedTxs];
 
       if (txsToCheck.length === 0) {

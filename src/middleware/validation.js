@@ -1,8 +1,15 @@
 /**
- * Validation middleware for API endpoints
+ * Validation Middleware - Input Validation Layer
+ * 
+ * RESPONSIBILITY: Request payload validation and sanitization for all API endpoints
+ * OWNER: Backend Team
+ * DEPENDENCIES: Validators, sanitizers, error utilities
+ * 
  * Handles structural and logic-based checks for donation and wallet operations.
+ * Validates Stellar addresses, amounts, date ranges, and transaction hashes.
  */
 
+const { sanitizeText } = require('../utils/sanitizer');
 const {
   isValidStellarPublicKey,
   isValidAmount,
@@ -10,7 +17,6 @@ const {
   walletAddressExists,
   isValidDateRange,
   isValidTransactionHash,
-  sanitizeString
 } = require('../utils/validators');
 
 /**
@@ -57,8 +63,8 @@ const validateDonationCreate = (req, res, next) => {
   }
 
   // Sanitize strings: Removes malicious or extra characters from input
-  const normalizedDonor = sanitizeString(donor);
-  const normalizedRecipient = sanitizeString(recipient);
+  const normalizedDonor = sanitizeText(donor);
+  const normalizedRecipient = sanitizeText(recipient);
 
   // Logical check: Prevents a user from donating to themselves
   if (normalizedDonor && normalizedRecipient && normalizedDonor === normalizedRecipient) {
@@ -155,7 +161,7 @@ const validateDateRange = (req, res, next) => {
 
   // Internal validator check: Ensures start is before end
   const validation = isValidDateRange(startDate, endDate);
-  
+
   if (!validation.valid) {
     return res.status(400).json({
       success: false,

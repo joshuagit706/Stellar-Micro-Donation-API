@@ -19,12 +19,9 @@ const {
 } = require("../utils/correlation");
 
 /**
- * Request ID Middleware with Correlation ID Support
- * 
- * Generates and attaches a unique ID to every request for tracing and correlation.
- * Enhanced with correlation context management for async operation tracking.
- * 
- * Flow: 
+ * Middleware to generate and attach a unique ID to every request
+ * Intent: Facilitate request tracing and log correlation across the system.
+ * Flow:
  * 1. Check for existing 'X-Request-ID' header (provided by proxy/load balancer).
  * 2. Parse correlation headers from inbound request
  * 3. Generate UUID v4 if not present (ensures uniqueness).
@@ -33,36 +30,19 @@ const {
  */
 
 const requestIdMiddleware = (req, res, next) => {
-  // Generate or extract request ID
-  const requestId = req.get("X-Request-ID") || uuidv4();
+  const requestId = req.get('X-Request-ID') || uuidv4();
 
   req.id = requestId;
-  res.setHeader("X-Request-ID", requestId);
+  res.setHeader('X-Request-ID', requestId);
 
-  // Parse correlation headers from inbound request
-  const correlationHeaders = parseCorrelationHeaders(req.headers);
-
-  // Initialize correlation context with request information
-  const correlationContext = initializeRequestContext(requestId, {
+  // Set logging context with requestId
+  log.setContext({
+    requestId,
     method: req.method,
     path: req.path,
     userAgent: req.get("User-Agent"),
     ip: req.ip,
     ...correlationHeaders,
-  });
-
-  // Store correlation context on request for later use
-  req.correlationContext = correlationContext;
-
-  // Add correlation headers to response
-  res.setHeader("X-Correlation-ID", correlationContext.correlationId);
-  res.setHeader("X-Trace-ID", correlationContext.traceId);
-
-  log.debug("REQUEST_ID", "Request ID and correlation context established", {
-    requestId,
-    correlationId: correlationContext.correlationId,
-    traceId: correlationContext.traceId,
-    hasInboundCorrelation: Object.keys(correlationHeaders).length > 0,
   });
 
   next();

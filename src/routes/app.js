@@ -1,3 +1,14 @@
+/**
+ * Application Entry Point
+ * 
+ * RESPONSIBILITY: Express server initialization, middleware orchestration, and lifecycle management
+ * OWNER: Backend Team
+ * DEPENDENCIES: All middleware, routes, and core services
+ * 
+ * This module bootstraps the Express application, configures middleware pipeline,
+ * registers API routes, and manages graceful startup/shutdown of background services.
+ */
+
 const express = require('express');
 const config = require('../config');
 const stellarConfig = require('../config/stellar');
@@ -7,9 +18,6 @@ const statsRoutes = require('./stats');
 const streamRoutes = require('./stream');
 const transactionRoutes = require('./transaction');
 const apiKeysRoutes = require('./apiKeys');
-const recurringDonationScheduler = require('../services/RecurringDonationScheduler');
-const TransactionReconciliationService = require('../services/TransactionReconciliationService');
-const { getStellarService } = require('../config/stellar');
 const { errorHandler, notFoundHandler } = require('../middleware/errorHandler');
 const logger = require('../middleware/logger');
 const { attachUserRole } = require('../middleware/rbac');
@@ -27,16 +35,22 @@ const {
 
 const app = express();
 
-// Initialize reconciliation service
-const stellarService = getStellarService();
-const reconciliationService = new TransactionReconciliationService(stellarService);
+// Initialize services from container
+const stellarService = serviceContainer.getStellarService();
+const reconciliationService = serviceContainer.getTransactionReconciliationService();
+const recurringDonationScheduler = serviceContainer.getRecurringDonationScheduler();
 
 // Initialize replay detection cleanup timer (will be started in startServer)
 let replayCleanupTimer = null;
 
 // Middleware
-app.use(express.json());
 app.use(requestId);
+
+// Payload size limit (must be before body parsers)
+app.use(payloadSizeLimiter);
+
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // Request/Response logging middleware
 app.use(logger.middleware());
@@ -51,8 +65,8 @@ app.use(replayDetectionMiddleware);
 app.use(attachUserRole());
 
 // Routes
-app.use('/donations', donationRoutes);
 app.use('/wallets', walletRoutes);
+app.use('/donations', donationRoutes);
 app.use('/stats', statsRoutes);
 app.use('/stream', streamRoutes);
 app.use('/transactions', transactionRoutes);
@@ -62,7 +76,6 @@ app.use('/api-keys', apiKeysRoutes);
 app.get('/health', async (req, res) => {
   try {
     await Database.get('SELECT 1 as ok');
-
     return res.status(200).json({
       status: 'ok',
       timestamp: new Date().toISOString(),
@@ -82,7 +95,7 @@ app.get('/health', async (req, res) => {
 // Abuse detection stats endpoint (admin only)
 app.get('/abuse-signals', require('../middleware/rbac').requireAdmin(), (req, res) => {
   const abuseDetector = require('../utils/abuseDetector');
-  
+
   res.json({
     success: true,
     data: abuseDetector.getStats(),
@@ -133,12 +146,10 @@ app.post('/reconcile', require('../middleware/rbac').requireAdmin(), async (req,
         error: 'Reconciliation already in progress'
       });
     }
-
     // Trigger reconciliation without waiting
     reconciliationService.reconcile().catch(error => {
       log.error('APP', 'Manual reconciliation failed', { error: error.message });
     });
-
     res.json({
       success: true,
       message: 'Reconciliation started',
@@ -189,8 +200,16 @@ async function startServer() {
         replayConfig
       );
 
-      // Final startup confirmation
-      log.info("APP", "🌟 Server ready and accepting connections", {
+  app.listen(PORT, () => {
+    log.info('APP', 'API started', {
+      port: PORT,
+      network: config.network,
+      healthCheck: `http://localhost:${PORT}/health`
+    });
+
+    if (log.isDebugMode) {
+      log.debug('APP', 'Debug mode enabled - verbose logging active');
+      log.debug('APP', 'Configuration loaded', {
         port: PORT,
         network: stellarConfig.network,
         healthCheck: `http://localhost:${PORT}/health`,
@@ -225,18 +244,9 @@ async function startServer() {
       }, 10000);
     };
 
-    // Handle shutdown signals
-    process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
-    process.on("SIGINT", () => gracefulShutdown("SIGINT"));
-
-    return server;
-  } catch (error) {
-    log.error("APP", "❌ Failed to start server", {
-      error: error.message,
-      stack: config.server.isDevelopment ? error.stack : undefined,
-    });
-    process.exit(1);
-  }
+    // Start the transaction reconciliation service
+    reconciliationService.start();
+  });
 }
 
 if (require.main === module) {

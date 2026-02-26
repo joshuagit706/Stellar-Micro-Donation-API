@@ -1,14 +1,25 @@
 /**
- * Real Stellar Service
- * Handles actual blockchain interactions with Stellar network
+ * Stellar Service - Blockchain Integration Layer
+ * 
+ * RESPONSIBILITY: Direct integration with Stellar blockchain network via Stellar SDK
+ * OWNER: Blockchain Team
+ * DEPENDENCIES: Stellar SDK, Horizon API, stellar config
+ * 
+ * Handles all blockchain operations including wallet creation, balance queries,
+ * transaction submission, and network communication with retry logic and error handling.
+ * Real Stellar Service - Handles actual blockchain interactions with Stellar network
  */
 
+// External modules
 const StellarSdk = require('stellar-sdk');
-const StellarErrorHandler = require('../utils/stellarErrorHandler');
+
+// Internal modules
+const StellarServiceInterface = require('./interfaces/StellarServiceInterface');
 const { STELLAR_NETWORKS, HORIZON_URLS } = require('../constants');
+const StellarErrorHandler = require('../utils/stellarErrorHandler');
 const log = require('../utils/log');
 
-class StellarService {
+class StellarService extends StellarServiceInterface {
   /**
    * Create a new StellarService instance
    * @param {Object} [config={}] - Configuration options

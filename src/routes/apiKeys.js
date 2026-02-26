@@ -1,3 +1,14 @@
+/**
+ * API Keys Routes - API Endpoint Layer
+ * 
+ * RESPONSIBILITY: HTTP request handling for API key management operations
+ * OWNER: Security Team
+ * DEPENDENCIES: API Keys model, middleware (auth, RBAC), validation helpers
+ * 
+ * Admin-only endpoints for API key lifecycle management including creation, listing,
+ * rotation, deprecation, and revocation. Supports zero-downtime key rotation.
+ */
+
 const express = require('express');
 const router = express.Router();
 const apiKeysModel = require('../models/apiKeys');
@@ -64,7 +75,7 @@ router.post('/', requireAdmin(), async (req, res, next) => {
 router.get('/', requireAdmin(), async (req, res, next) => {
   try {
     const { status, role } = req.query;
-    
+
     const filters = {};
     if (status) filters.status = status;
     if (role) filters.role = role;
@@ -87,7 +98,7 @@ router.get('/', requireAdmin(), async (req, res, next) => {
 router.post('/:id/deprecate', requireAdmin(), async (req, res, next) => {
   try {
     const keyIdValidation = validateInteger(req.params.id, { min: 1 });
-    
+
     if (!keyIdValidation.valid) {
       throw new ValidationError(`Invalid key ID: ${keyIdValidation.error}`);
     }
@@ -120,7 +131,7 @@ router.post('/:id/deprecate', requireAdmin(), async (req, res, next) => {
 router.delete('/:id', requireAdmin(), async (req, res, next) => {
   try {
     const keyIdValidation = validateInteger(req.params.id, { min: 1 });
-    
+
     if (!keyIdValidation.valid) {
       throw new ValidationError(`Invalid key ID: ${keyIdValidation.error}`);
     }

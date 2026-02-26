@@ -1,18 +1,21 @@
+// Built-in modules
 const fs = require('fs');
 const path = require('path');
+
+// Internal modules
 const log = require('../utils/log');
 const config = require('../config');
 
 /**
  * Request/Response Auditing Middleware
- * Intent: Provide full observability into the API lifecycle while strictly 
+ * Intent: Provide full observability into the API lifecycle while strictly
  * adhering to data privacy by redacting PII and sensitive blockchain keys.
  */
 class Logger {
   constructor(options = {}) {
     this.logToFile = options.logToFile || false;
     this.logDir = options.logDir || path.join(__dirname, '../../logs');
-    
+
     // List of fields to be redacted during the sanitization process
     this.sensitiveFields = options.sensitiveFields || [
       'password', 'secretKey', 'secret', 'token', 'authorization',
@@ -37,7 +40,7 @@ class Logger {
 
   /**
    * Intent: Prevent sensitive data (like Stellar Private Keys) from leaking into logs.
-   * Flow: 
+   * Flow:
    * 1. Recursively traverses objects and arrays.
    * 2. Matches keys against the 'sensitiveFields' blacklist (case-insensitive).
    * 3. Replaces matched values with '[REDACTED]'.
@@ -54,8 +57,8 @@ class Logger {
     const sanitized = {};
     for (const [key, value] of Object.entries(obj)) {
       const lowerKey = key.toLowerCase();
-      
-      const isSensitive = this.sensitiveFields.some(field => 
+
+      const isSensitive = this.sensitiveFields.some(field =>
         lowerKey.includes(field.toLowerCase())
       );
 
@@ -99,7 +102,7 @@ class Logger {
 
   /**
    * Intent: Provide real-time feedback to developers via the console using structured logging.
-   * Flow: 
+   * Flow:
    * 1. Applies ANSI color codes based on HTTP status (Green/Yellow/Red).
    * 2. Outputs high-level summary including Method, Endpoint, Status, and requestId.
    * 3. If LOG_VERBOSE is active, outputs full sanitized request/response bodies.
@@ -107,7 +110,7 @@ class Logger {
    */
   logToConsole(logData) {
     const { method, endpoint, statusCode, duration, requestId } = logData;
-    
+
     let statusColor = '\x1b[32m'; // Green for 2xx
     if (statusCode >= 400 && statusCode < 500) {
       statusColor = '\x1b[33m'; // Yellow for 4xx
@@ -126,14 +129,14 @@ class Logger {
       timestamp
     });
 
-    if (config.logging.verbose) {
-      log.info('REQUEST_LOGGER', 'Request payload', { 
+    if (process.env.LOG_VERBOSE === 'true') {
+      log.info('REQUEST_LOGGER', 'Request payload', {
         requestId,
-        ...logData.request 
+        ...logData.request
       });
-      log.info('REQUEST_LOGGER', 'Response payload', { 
+      log.info('REQUEST_LOGGER', 'Response payload', {
         requestId,
-        ...logData.response 
+        ...logData.response
       });
     }
 
@@ -168,7 +171,7 @@ class Logger {
     return (req, res, next) => {
       const startTime = Date.now();
       const timestamp = new Date().toISOString();
-      const requestId = req.id; 
+      const requestId = req.id;
 
       const originalJson = res.json.bind(res);
       let responseBody = null;
@@ -183,7 +186,7 @@ class Logger {
 
         const logData = {
           timestamp,
-          requestId, 
+          requestId,
           method: req.method,
           endpoint: req.originalUrl || req.url,
           statusCode: res.statusCode,

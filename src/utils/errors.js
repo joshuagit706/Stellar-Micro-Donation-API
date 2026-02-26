@@ -1,6 +1,12 @@
 /**
- * Unified Error Handling System
- * Provides consistent error structure across all services
+ * Error Utilities - Error Management Layer
+ * 
+ * RESPONSIBILITY: Centralized error definitions, custom error classes, and error codes
+ * OWNER: Backend Team
+ * DEPENDENCIES: None (foundational utility)
+ * 
+ * Provides consistent error structure across all services with standardized error codes,
+ * custom error classes for different error types, and HTTP status code mapping.
  */
 
 /**
@@ -9,67 +15,41 @@
  * Numeric codes provide stable API error handling
  */
 const ERROR_CODES = {
-  // Validation errors (400) - 1000-1099
-  VALIDATION_ERROR: { code: "VALIDATION_ERROR", numeric: 1000 },
-  INVALID_REQUEST: { code: "INVALID_REQUEST", numeric: 1001 },
-  INVALID_LIMIT: { code: "INVALID_LIMIT", numeric: 1002 },
-  INVALID_OFFSET: { code: "INVALID_OFFSET", numeric: 1003 },
-  INVALID_DATE_FORMAT: { code: "INVALID_DATE_FORMAT", numeric: 1004 },
-  INVALID_AMOUNT: { code: "INVALID_AMOUNT", numeric: 1005 },
-  INVALID_FREQUENCY: { code: "INVALID_FREQUENCY", numeric: 1006 },
-  MISSING_REQUIRED_FIELD: { code: "MISSING_REQUIRED_FIELD", numeric: 1007 },
-  IDEMPOTENCY_KEY_REQUIRED: { code: "IDEMPOTENCY_KEY_REQUIRED", numeric: 1008 },
-  INVALID_WALLET_ADDRESS: { code: "INVALID_WALLET_ADDRESS", numeric: 1009 },
-  INVALID_MEMO_FORMAT: { code: "INVALID_MEMO_FORMAT", numeric: 1010 },
+  // Validation errors (400)
+  VALIDATION_ERROR: 'VALIDATION_ERROR',
+  INVALID_REQUEST: 'INVALID_REQUEST',
+  INVALID_LIMIT: 'INVALID_LIMIT',
+  INVALID_OFFSET: 'INVALID_OFFSET',
+  INVALID_DATE_FORMAT: 'INVALID_DATE_FORMAT',
+  INVALID_AMOUNT: 'INVALID_AMOUNT',
+  INVALID_FREQUENCY: 'INVALID_FREQUENCY',
+  MISSING_REQUIRED_FIELD: 'MISSING_REQUIRED_FIELD',
+  IDEMPOTENCY_KEY_REQUIRED: 'IDEMPOTENCY_KEY_REQUIRED',
 
-  // Authentication/Authorization errors (401, 403) - 2000-2099
-  UNAUTHORIZED: { code: "UNAUTHORIZED", numeric: 2000 },
-  ACCESS_DENIED: { code: "ACCESS_DENIED", numeric: 2001 },
-  INSUFFICIENT_PERMISSIONS: { code: "INSUFFICIENT_PERMISSIONS", numeric: 2002 },
-  INVALID_API_KEY: { code: "INVALID_API_KEY", numeric: 2003 },
-  EXPIRED_API_KEY: { code: "EXPIRED_API_KEY", numeric: 2004 },
+  // Authentication/Authorization errors (401, 403)
+  UNAUTHORIZED: 'UNAUTHORIZED',
+  ACCESS_DENIED: 'ACCESS_DENIED',
+  INSUFFICIENT_PERMISSIONS: 'INSUFFICIENT_PERMISSIONS',
 
-  // Not found errors (404) - 3000-3099
-  NOT_FOUND: { code: "NOT_FOUND", numeric: 3000 },
-  WALLET_NOT_FOUND: { code: "WALLET_NOT_FOUND", numeric: 3001 },
-  TRANSACTION_NOT_FOUND: { code: "TRANSACTION_NOT_FOUND", numeric: 3002 },
-  USER_NOT_FOUND: { code: "USER_NOT_FOUND", numeric: 3003 },
-  DONATION_NOT_FOUND: { code: "DONATION_NOT_FOUND", numeric: 3004 },
-  ENDPOINT_NOT_FOUND: { code: "ENDPOINT_NOT_FOUND", numeric: 3005 },
+  // Not found errors (404)
+  NOT_FOUND: 'NOT_FOUND',
+  WALLET_NOT_FOUND: 'WALLET_NOT_FOUND',
+  TRANSACTION_NOT_FOUND: 'TRANSACTION_NOT_FOUND',
+  USER_NOT_FOUND: 'USER_NOT_FOUND',
+  DONATION_NOT_FOUND: 'DONATION_NOT_FOUND',
+  ENDPOINT_NOT_FOUND: 'ENDPOINT_NOT_FOUND',
 
-  // Conflict errors (409) - 4000-4099
-  DUPLICATE_TRANSACTION: { code: "DUPLICATE_TRANSACTION", numeric: 4000 },
-  DUPLICATE_DONATION: { code: "DUPLICATE_DONATION", numeric: 4001 },
-  DUPLICATE_WALLET: { code: "DUPLICATE_WALLET", numeric: 4002 },
-  IDEMPOTENCY_KEY_CONFLICT: { code: "IDEMPOTENCY_KEY_CONFLICT", numeric: 4003 },
+  // Business logic errors (422)
+  DUPLICATE_TRANSACTION: 'DUPLICATE_TRANSACTION',
+  DUPLICATE_DONATION: 'DUPLICATE_DONATION',
+  INSUFFICIENT_BALANCE: 'INSUFFICIENT_BALANCE',
+  TRANSACTION_FAILED: 'TRANSACTION_FAILED',
 
-  // Business logic errors (422) - 5000-5099
-  INSUFFICIENT_BALANCE: { code: "INSUFFICIENT_BALANCE", numeric: 5000 },
-  TRANSACTION_FAILED: { code: "TRANSACTION_FAILED", numeric: 5001 },
-  INVALID_TRANSACTION_STATUS: {
-    code: "INVALID_TRANSACTION_STATUS",
-    numeric: 5002,
-  },
-  RECURRING_DONATION_FAILED: {
-    code: "RECURRING_DONATION_FAILED",
-    numeric: 5003,
-  },
-  WITHDRAWAL_LIMIT_EXCEEDED: {
-    code: "WITHDRAWAL_LIMIT_EXCEEDED",
-    numeric: 5004,
-  },
-
-  // Rate limiting errors (429) - 6000-6099
-  RATE_LIMIT_EXCEEDED: { code: "RATE_LIMIT_EXCEEDED", numeric: 6000 },
-  TOO_MANY_REQUESTS: { code: "TOO_MANY_REQUESTS", numeric: 6001 },
-
-  // Server errors (500) - 9000-9099
-  INTERNAL_ERROR: { code: "INTERNAL_ERROR", numeric: 9000 },
-  DATABASE_ERROR: { code: "DATABASE_ERROR", numeric: 9001 },
-  VERIFICATION_FAILED: { code: "VERIFICATION_FAILED", numeric: 9002 },
-  SERVICE_UNAVAILABLE: { code: "SERVICE_UNAVAILABLE", numeric: 9003 },
-  STELLAR_NETWORK_ERROR: { code: "STELLAR_NETWORK_ERROR", numeric: 9004 },
-  EXTERNAL_SERVICE_ERROR: { code: "EXTERNAL_SERVICE_ERROR", numeric: 9005 },
+  // Server errors (500)
+  INTERNAL_ERROR: 'INTERNAL_ERROR',
+  DATABASE_ERROR: 'DATABASE_ERROR',
+  VERIFICATION_FAILED: 'VERIFICATION_FAILED',
+  SERVICE_UNAVAILABLE: 'SERVICE_UNAVAILABLE',
 };
 
 /**

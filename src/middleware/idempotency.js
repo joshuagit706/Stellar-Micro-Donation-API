@@ -1,8 +1,13 @@
 /**
- * Idempotency Middleware
- * Intent: Guarantee that a single logical operation (like a Stellar donation) is 
- * executed exactly once, even if the client retries the request due to network instability.
- * Flow: Header Check -> Key Validation -> Cache Lookup -> (If New) Hash Request Body -> (If Cached) Return Response.
+ * Idempotency Middleware - Request Deduplication Layer
+ * 
+ * RESPONSIBILITY: Prevents duplicate transaction execution through idempotency key tracking
+ * OWNER: Backend Team
+ * DEPENDENCIES: IdempotencyService, Database, logger
+ * 
+ * Guarantees that a single logical operation (like a Stellar donation) is executed
+ * exactly once, even if the client retries due to network instability.
+ * Flow: Header Check -> Key Validation -> Cache Lookup -> Hash Request Body -> Return Response.
  */
 
 const IdempotencyService = require('../services/IdempotencyService');
@@ -12,7 +17,7 @@ const log = require('../utils/log');
 /**
  * Required Idempotency Check
  * Intent: Force the client to provide a unique key for write operations.
- * Flow: 
+ * Flow:
  * 1. Extract 'Idempotency-Key' or 'x-idempotency-key' from headers.
  * 2. Validate format (ensure it's not empty or malformed).
  * 3. Query the IdempotencyService to see if this key has a successful cached response.
@@ -41,10 +46,10 @@ async function requireIdempotency(req, res, next) {
     }
 
     const existing = await IdempotencyService.get(idempotencyKey);
-    
+
     if (existing) {
       log.info('IDEMPOTENCY', 'Returning cached response', { idempotencyKey });
-      
+
       // Return cached response (idempotent behavior)
       return res.status(200).json({
         ...existing.response,
@@ -56,13 +61,13 @@ async function requireIdempotency(req, res, next) {
     const requestHash = IdempotencyService.generateRequestHash(req.body);
 
     const duplicate = await IdempotencyService.findByHash(requestHash, idempotencyKey);
-    
+
     if (duplicate) {
       log.warn('IDEMPOTENCY', 'Duplicate request payload detected with different key', {
         originalKey: duplicate.idempotencyKey,
         newKey: idempotencyKey,
       });
-      
+
       req.idempotencyWarning = {
         message: 'Similar request detected with different idempotency key',
         originalKey: duplicate.idempotencyKey,
@@ -90,7 +95,7 @@ async function requireIdempotency(req, res, next) {
  */
 async function storeIdempotencyResponse(req, response) {
   if (!req.idempotency || !req.idempotency.isNew) {
-    return; 
+    return;
   }
 
   try {

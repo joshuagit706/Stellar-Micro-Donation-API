@@ -3,7 +3,34 @@
  * Uses centralized configuration module
  */
 
-const config = require('./index');
+/**
+ * Load rate limit configuration from environment variables
+ * @returns {Object} Configuration object with limit, windowMs, and cleanupIntervalMs
+ */
+function loadRateLimitConfig() {
+  const config = {
+    limit: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS, 10) || 100,
+    windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS, 10) || 60000,
+    cleanupIntervalMs: parseInt(process.env.RATE_LIMIT_CLEANUP_INTERVAL_MS, 10) || 300000
+  };
+
+  // Validate configuration
+  const validation = validateRateLimitConfig(config);
+
+  if (!validation.valid) {
+    console.warn('[Rate Limit Config] Invalid configuration detected:', validation.errors);
+    console.warn('[Rate Limit Config] Falling back to default values');
+
+    // Return defaults on validation failure
+    return {
+      limit: 100,
+      windowMs: 60000,
+      cleanupIntervalMs: 300000
+    };
+  }
+
+  return config;
+}
 
 /**
  * Validate rate limit configuration values

@@ -1,7 +1,12 @@
 /**
- * API Key Middleware
- * Validates API keys against both database and legacy environment variables
- * Uses security configuration for safe defaults and validation
+ * API Key Middleware - Authentication Layer
+ * 
+ * RESPONSIBILITY: API key validation and authentication for all protected endpoints
+ * OWNER: Security Team
+ * DEPENDENCIES: API Keys model, security config, logger
+ * 
+ * Validates API keys against both database-backed keys and legacy environment variables.
+ * Supports key rotation, expiration, and role-based access control.
  */
 
 const { securityConfig } = require("../config/securityConfig");
@@ -15,8 +20,18 @@ const log = require("../utils/log");
 const legacyKeys = securityConfig.API_KEYS || [];
 
 /**
- * API Key Validation Middleware
- * Validates x-api-key header against database and legacy keys
+ * API Key Authentication Middleware
+ * Intent: Secure the API by enforcing mandatory key-based authentication, supporting
+ * both modern database-backed rotation and legacy static keys.
+ * * Flow:
+ * 1. Header Extraction: Scans 'x-api-key' from the incoming request headers.
+ * 2. Primary Validation: Queries the database via 'validateApiKey' to check for
+ * active, non-revoked, and non-expired keys.
+ * 3. Metadata Attachment: If valid, binds key details (id, role, etc.) to 'req.apiKey'.
+ * 4. Deprecation Logic: Inspects if the key is marked for rotation; if so,
+ * injects 'X-API-Key-Deprecated' and 'Warning' headers into the response.
+ * 5. Legacy Fallback: If DB lookup fails, checks the 'legacyKeys' array derived from ENV.
+ * 6. Final Disposition: Calls next() on success, or returns 401 Unauthorized if all checks fail.
  */
 const requireApiKey = async (req, res, next) => {
   const apiKey = req.get("x-api-key");
@@ -39,27 +54,12 @@ const requireApiKey = async (req, res, next) => {
   }
 
   try {
-    // First try database validation
-    const keyInfo = await validateKey(apiKey);
+    // Stage 1: Attempt Database-backed validation (Supports key rotation & granular roles)
+    const keyInfo = await validateApiKey(key);
 
     if (keyInfo) {
-      // Valid database key found
-      req.user = {
-        id: keyInfo.id,
-        role: keyInfo.role,
-        keyPrefix: keyInfo.key_prefix,
-        isDeprecated: keyInfo.isDeprecated,
-        source: "database",
-      };
+      req.apiKey = keyInfo;
 
-      log.info("API_KEY", "Valid database API key used", {
-        keyPrefix: keyInfo.key_prefix,
-        role: keyInfo.role,
-        path: req.path,
-        isDeprecated: keyInfo.isDeprecated,
-      });
-
-      // Add deprecation warning if needed
       // Proactive rotation warning for client-side automated systems
       if (keyInfo.isDeprecated) {
         res.setHeader("X-API-Key-Deprecated", "true");

@@ -1,3 +1,14 @@
+/**
+ * Encryption Utility - Data Protection Layer
+ * 
+ * RESPONSIBILITY: AES-256-GCM encryption/decryption for sensitive data at rest
+ * OWNER: Security Team
+ * DEPENDENCIES: crypto, security config, logger
+ * 
+ * Provides secure encryption for sensitive data storage using AES-256-GCM with
+ * authenticated encryption. Manages encryption keys and initialization vectors.
+ */
+
 const crypto = require('crypto');
 const { securityConfig } = require("../config/securityConfig");
 const log = require("./log");
@@ -25,7 +36,7 @@ const getEncryptionKey = () => {
         throw new Error(errorMsg);
     }
 
-    // If key is provided as hex or base64, decode it. 
+    // If key is provided as hex or base64, decode it.
     // For simplicity here, we assume it's a string and hash it to 32 bytes.
     const derivedKey = crypto.createHash("sha256").update(key).digest();
 

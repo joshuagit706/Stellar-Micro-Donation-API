@@ -1,3 +1,14 @@
+/**
+ * RBAC Middleware - Authorization Layer
+ * 
+ * RESPONSIBILITY: Role-based access control and permission validation
+ * OWNER: Security Team
+ * DEPENDENCIES: Permissions model, API Keys model, config
+ * 
+ * Enforces granular permission checks for API endpoints. Handles transition between
+ * legacy environment-based keys and database-backed API key system with RBAC.
+ */
+
 const { UnauthorizedError, ForbiddenError } = require('../utils/errors');
 const { hasPermission } = require('../models/permissions');
 const { validateApiKey } = require('../models/apiKeys');
@@ -5,7 +16,7 @@ const config = require('../config');
 
 /**
  * Role-Based Access Control (RBAC) Configuration
- * Intent: Handle the transition between legacy environment-based keys and 
+ * Intent: Handle the transition between legacy environment-based keys and
  * the new database-backed API key system with granular permissions.
  */
 const legacyKeys = config.apiKeys.legacy;
@@ -13,7 +24,7 @@ const legacyKeys = config.apiKeys.legacy;
 /**
  * Single Permission Validator
  * Intent: Restrict endpoint access to users possessing a specific permission string.
- * Flow: 
+ * Flow:
  * 1. Verify existence of req.user object (populated by attachUserRole).
  * 2. Extract current role (defaults to 'guest' if undefined).
  * 3. Cross-reference role and permission against the permissions model.
@@ -42,7 +53,7 @@ exports.checkPermission = (permission) => {
 /**
  * Union Permission Validator (OR Logic)
  * Intent: Allow access if the user meets any one of multiple permission criteria.
- * Flow: 
+ * Flow:
  * 1. Iterates through the 'permissions' array.
  * 2. Uses Array.prototype.some() to find at least one valid role-permission match.
  * 3. If no matches are found, generates a descriptive error listing all acceptable permissions.
@@ -55,7 +66,7 @@ exports.checkAnyPermission = (permissions) => {
       }
 
       const userRole = req.user.role || 'guest';
-      const hasAnyPermission = permissions.some(permission => 
+      const hasAnyPermission = permissions.some(permission =>
         hasPermission(userRole, permission)
       );
 
@@ -73,7 +84,7 @@ exports.checkAnyPermission = (permissions) => {
 /**
  * Intersection Permission Validator (AND Logic)
  * Intent: Enforce high-security access requiring a user to possess every listed permission.
- * Flow: 
+ * Flow:
  * 1. Evaluates the entire array of required permissions using Array.prototype.every().
  * 2. Ensures the user role supports the full set of required operations.
  * 3. Strict failure if even one permission is missing from the user's role profile.
@@ -86,7 +97,7 @@ exports.checkAllPermissions = (permissions) => {
       }
 
       const userRole = req.user.role || 'guest';
-      const hasAllPermissions = permissions.every(permission => 
+      const hasAllPermissions = permissions.every(permission =>
         hasPermission(userRole, permission)
       );
 
@@ -142,7 +153,7 @@ exports.attachUserRole = () => {
       if (req.apiKey) {
         const role = req.apiKey.role || 'user';
         const keyId = req.apiKey.id || 'legacy';
-        
+
         req.user = {
           id: `apikey-${keyId}`,
           role: role,
@@ -150,7 +161,7 @@ exports.attachUserRole = () => {
           apiKeyId: req.apiKey.id,
           isLegacy: req.apiKey.isLegacy || false
         };
-      } 
+      }
       // Priority 2: Standard Header Authentication
       else if (req.headers && req.headers['x-api-key']) {
         const apiKey = req.headers['x-api-key'];
@@ -171,7 +182,7 @@ exports.attachUserRole = () => {
             res.setHeader('X-API-Key-Deprecated', 'true');
             res.setHeader('Warning', '299 - "API key is deprecated and will be revoked soon"');
           }
-        } 
+        }
         // Priority 3: Legacy Environment variable support
         else if (legacyKeys.includes(apiKey)) {
           req.user = {
@@ -180,7 +191,7 @@ exports.attachUserRole = () => {
             name: 'Legacy API Key User',
             isLegacy: true
           };
-        } 
+        }
         // Failure: No valid key found
         else {
           return res.status(401).json({
@@ -191,7 +202,7 @@ exports.attachUserRole = () => {
             }
           });
         }
-      } 
+      }
       // Default: Unauthenticated Guest access
       else {
         req.user = { id: 'guest', role: 'guest', name: 'Guest' };

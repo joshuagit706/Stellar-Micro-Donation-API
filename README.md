@@ -27,6 +27,7 @@ A Node.js/Express API for managing micro-donations on the Stellar blockchain net
 - **Automated Scheduler**: Background service for executing recurring donations
 - **Rate Limiting**: Protection against abuse with configurable request limits on donation endpoints
 - **Idempotency**: Prevent duplicate transactions with idempotency key support
+- **Sensitive Data Masking**: Automatic masking of secrets, API keys, and private values in all logs
 
 ## 🏗️ Architecture
 
@@ -470,6 +471,7 @@ The scheduler runs automatically when the server starts and checks for due donat
 
 ### Technical Documentation
 - **[Architecture Documentation](docs/ARCHITECTURE.md)** - Detailed system architecture
+- **[Versioning Strategy](docs/VERSIONING_STRATEGY.md)** - SemVer rules, release flow, and breaking change policy
 - **[Stellar Failure Simulation](docs/STELLAR_FAILURE_SIMULATION.md)** - Network failure testing guide
 - **[API Flow Diagram](API%20flow%20diagram.txt)** - API request flow
 - **[Mock Stellar Guide](MOCK_STELLAR_GUIDE.md)** - Using mock Stellar service
@@ -531,4 +533,5 @@ For comprehensive documentation, see the [Documentation Index](docs/README.md).
 - **[API Examples](docs/API_EXAMPLES.md)** - Complete API usage examples
 - **[Coverage Guide](docs/COVERAGE_GUIDE.md)** - Test coverage documentation
 - **[Mock Stellar Guide](docs/guides/MOCK_STELLAR_GUIDE.md)** - Testing without network calls
+- **[Versioning Strategy](docs/VERSIONING_STRATEGY.md)** - SemVer rules, release flow, and breaking change policy
 
