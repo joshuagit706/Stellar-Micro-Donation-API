@@ -1,10 +1,16 @@
+/**
+ * Wallet Routes
+ * Thin controllers that orchestrate service calls
+ * All business logic delegated to WalletService
+ */
+
 const express = require('express');
 const router = express.Router();
-const Wallet = require('./models/wallet');
-const Database = require('../utils/database');
 const { checkPermission } = require('../middleware/rbac');
 const { PERMISSIONS } = require('../utils/permissions');
-const { sanitizeLabel, sanitizeName } = require('../utils/sanitizer');
+const WalletService = require('../services/WalletService');
+
+const walletService = new WalletService();
 
 /**
  * POST /wallets
@@ -42,10 +48,7 @@ router.post('/', checkPermission(PERMISSIONS.WALLETS_CREATE), (req, res) => {
       data: wallet
     });
   } catch (error) {
-    res.status(500).json({
-      error: 'Failed to create wallet',
-      message: error.message
-    });
+    next(error);
   }
 });
 
@@ -55,17 +58,14 @@ router.post('/', checkPermission(PERMISSIONS.WALLETS_CREATE), (req, res) => {
  */
 router.get('/', checkPermission(PERMISSIONS.WALLETS_READ), (req, res) => {
   try {
-    const wallets = Wallet.getAll();
+    const wallets = walletService.getAllWallets();
     res.json({
       success: true,
       data: wallets,
       count: wallets.length
     });
   } catch (error) {
-    res.status(500).json({
-      error: 'Failed to retrieve wallets',
-      message: error.message
-    });
+    next(error);
   }
 });
 
@@ -88,10 +88,7 @@ router.get('/:id', checkPermission(PERMISSIONS.WALLETS_READ), (req, res) => {
       data: wallet
     });
   } catch (error) {
-    res.status(500).json({
-      error: 'Failed to retrieve wallet',
-      message: error.message
-    });
+    next(error);
   }
 });
 
@@ -127,10 +124,7 @@ router.patch('/:id', checkPermission(PERMISSIONS.WALLETS_UPDATE), (req, res) => 
       data: wallet
     });
   } catch (error) {
-    res.status(500).json({
-      error: 'Failed to update wallet',
-      message: error.message
-    });
+    next(error);
   }
 });
 
@@ -189,14 +183,12 @@ router.get('/:publicKey/transactions', checkPermission(PERMISSIONS.WALLETS_READ)
 
     res.json({
       success: true,
-      data: formattedTransactions,
-      count: formattedTransactions.length
+      data: result.transactions,
+      count: result.count,
+      message: result.message
     });
   } catch (error) {
-    res.status(500).json({
-      error: 'Failed to retrieve transactions',
-      message: error.message
-    });
+    next(error);
   }
 });
 
