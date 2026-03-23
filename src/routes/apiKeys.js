@@ -169,6 +169,49 @@ router.get('/', requireAdmin(), apiKeyListQuerySchema, async (req, res, next) =>
 });
 
 /**
+ * POST /api/v1/api-keys/:id/rotate
+ * Atomically rotate an API key: creates a new key and deprecates the old one (admin only)
+ */
+router.post('/:id/rotate', requireAdmin(), apiKeyIdParamSchema, async (req, res, next) => {
+  try {
+    const keyIdValidation = validateInteger(req.params.id, { min: 1 });
+    if (keyIdValidation.error) return res.status(400).json({ success: false, error: { message: keyIdValidation.error } });
+
+    const { gracePeriodDays = 30 } = req.body || {};
+    const result = await apiKeysModel.rotateApiKey(keyIdValidation.value, { gracePeriodDays });
+
+    if (!result) {
+      return res.status(404).json({ success: false, error: { message: 'API key not found or already revoked' } });
+    }
+
+    AuditLogService.log({
+      category: AuditLogService.CATEGORY.AUTHORIZATION,
+      action: AuditLogService.ACTION.ADMIN_ACCESS_GRANTED,
+      severity: AuditLogService.SEVERITY.MEDIUM,
+      result: 'SUCCESS',
+      userId: req.user?.id?.toString(),
+      requestId: req.id,
+      ipAddress: req.ip,
+      resource: `/api/v1/api-keys/${keyIdValidation.value}/rotate`,
+      details: { rotatedBy: req.user?.id, oldKeyId: keyIdValidation.value, newKeyId: result.newKey.id },
+    }).catch(() => {});
+
+    return res.status(201).json({
+      success: true,
+      data: {
+        newKey: result.newKey,
+        oldKeyId: result.oldKeyId,
+        deprecatedAt: result.deprecatedAt,
+        gracePeriodDays,
+        autoRevokeAt: new Date(Date.now() + gracePeriodDays * 24 * 60 * 60 * 1000).toISOString(),
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
  * POST /api/v1/api-keys/:id/deprecate
  * Deprecate an API key (admin only)
  */

@@ -251,6 +251,14 @@ exports.attachUserRole = () => {
             res.setHeader('X-API-Key-Deprecated', 'true');
             res.setHeader('Warning', '299 - "API key is deprecated and will be revoked soon"');
           }
+
+          if (!keyInfo.isDeprecated && keyInfo.createdAt && keyInfo.gracePeriodDays) {
+            const ageMs = Date.now() - keyInfo.createdAt;
+            const thresholdMs = keyInfo.gracePeriodDays * 0.8 * 24 * 60 * 60 * 1000;
+            if (ageMs >= thresholdMs) {
+              res.setHeader('X-Rotation-Suggested', 'true');
+            }
+          }
         }
         // Priority 3: Legacy Environment variable support
         else if (legacyKeys.includes(apiKey)) {

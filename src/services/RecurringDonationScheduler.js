@@ -13,6 +13,7 @@
 const MockStellarService = require('./MockStellarService');
 const { SCHEDULE_STATUS, DONATION_FREQUENCIES } = require('../constants');
 const log = require('../utils/log');
+const { revokeExpiredDeprecatedKeys } = require('../models/apiKeys');
 const {
   withBackgroundContext,
   withAsyncContext,
@@ -138,6 +139,15 @@ class RecurringDonationScheduler {
         .map((schedule) => this.executeScheduleWithRetry(schedule));
 
       await Promise.allSettled(promises);
+
+      try {
+        const revokedCount = await revokeExpiredDeprecatedKeys();
+        if (revokedCount > 0) {
+          log.info('RECURRING_SCHEDULER', `Auto-revoked ${revokedCount} expired deprecated API key(s)`);
+        }
+      } catch (err) {
+        log.error('RECURRING_SCHEDULER', 'Failed to auto-revoke expired API keys', { error: err.message });
+      }
     } catch (error) {
       log.error("RECURRING_SCHEDULER", "Error processing schedules", {
         error: error.message,
