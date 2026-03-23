@@ -21,6 +21,7 @@ const { donationRateLimiter, verificationRateLimiter } = require('../middleware/
 const { validateRequiredFields, validateFloat, validateInteger } = require('../utils/validationHelpers');
 const { validateSchema } = require('../middleware/schemaValidation');
 const { TRANSACTION_STATES } = require('../utils/transactionStateMachine');
+const { parseCursorPaginationQuery } = require('../utils/pagination');
 
 const { getStellarService } = require('../config/stellar');
 const DonationService = require('../services/DonationService');
@@ -332,17 +333,21 @@ router.post('/', donationRateLimiter, requireApiKey, requireIdempotency, createD
  */
 router.get('/', checkPermission(PERMISSIONS.DONATIONS_READ), (req, res, next) => {
   try {
-    const transactions = donationService.getAllDonations();
+    const pagination = parseCursorPaginationQuery(req.query);
+    const result = donationService.getPaginatedDonations(pagination);
     
     // Mark processing complete
     if (req.markLifecycleStage) {
       req.markLifecycleStage(LIFECYCLE_STAGES.PROCESSED);
     }
+
+    res.setHeader('X-Total-Count', String(result.totalCount));
     
     res.json({
       success: true,
-      data: transactions,
-      count: transactions.length
+      data: result.data,
+      count: result.data.length,
+      meta: result.meta
     });
   } catch (error) {
     next(error);

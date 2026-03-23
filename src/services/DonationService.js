@@ -20,6 +20,7 @@ const { TRANSACTION_STATES } = require('../utils/transactionStateMachine');
 const { ValidationError, NotFoundError, ERROR_CODES } = require('../utils/errors');
 const LimitService = require('./LimitService');
 const log = require('../utils/log');
+const { paginateCollection } = require('../utils/pagination');
 
 class DonationService {
   constructor(stellarService) {
@@ -294,6 +295,22 @@ class DonationService {
    */
   getAllDonations() {
     return Transaction.getAll();
+  }
+
+  /**
+   * Get donations using cursor-based pagination.
+   * @param {Object} pagination - Pagination options.
+   * @param {{ timestamp: string, id: string }|null} pagination.cursor - Decoded cursor.
+   * @param {number} pagination.limit - Page size.
+   * @param {string} pagination.direction - Pagination direction.
+   * @returns {{ data: Array, totalCount: number, meta: Object }} Paginated donations.
+   */
+  getPaginatedDonations(pagination) {
+    return paginateCollection(Transaction.getAll(), {
+      ...pagination,
+      timestampField: 'timestamp',
+      idField: 'id',
+    });
   }
 
   /**
