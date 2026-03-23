@@ -19,6 +19,7 @@ const { sanitizeIdentifier } = require('../utils/sanitizer');
 const { TRANSACTION_STATES } = require('../utils/transactionStateMachine');
 const { ValidationError, NotFoundError, ERROR_CODES } = require('../utils/errors');
 const log = require('../utils/log');
+const priceOracle = require('./PriceOracleService');
 
 class DonationService {
   constructor(stellarService) {
@@ -240,14 +241,15 @@ class DonationService {
   /**
    * Create a non-custodial donation record
    * @param {Object} params - Donation parameters
-   * @param {number} params.amount - Donation amount
+   * @param {number} params.amount - Donation amount (in the specified currency)
+   * @param {string} [params.currency='XLM'] - Currency of the amount (XLM, USD, EUR, GBP)
    * @param {string} params.donor - Donor identifier
    * @param {string} params.recipient - Recipient identifier
    * @param {string} params.memo - Optional memo
    * @param {string} params.idempotencyKey - Idempotency key
    * @returns {Object} Created transaction
    */
-  async createDonationRecord({ amount, donor, recipient, memo, idempotencyKey }) {
+  async createDonationRecord({ amount, currency = 'XLM', donor, recipient, memo, idempotencyKey }) {
     // Sanitize identifiers
     const sanitizedDonor = donor ? sanitizeIdentifier(donor) : 'Anonymous';
     const sanitizedRecipient = sanitizeIdentifier(recipient);
@@ -257,18 +259,36 @@ class DonationService {
       throw new ValidationError('Sender and recipient wallets must be different');
     }
 
-    // Validate amount and limits
-    this.validateDonationAmount(amount, sanitizedDonor);
+    // Currency conversion
+    const normalizedCurrency = currency.toUpperCase();
+    let xlmAmount = amount;
+    if (normalizedCurrency !== 'XLM') {
+      try {
+        xlmAmount = await priceOracle.convertToXLM(amount, normalizedCurrency);
+        log.info('DONATION_SERVICE', 'Currency converted', {
+          originalAmount: amount,
+          originalCurrency: normalizedCurrency,
+          xlmAmount
+        });
+      } catch (err) {
+        throw new ValidationError(`Currency conversion failed: ${err.message}`);
+      }
+    }
+
+    // Validate XLM amount and limits
+    this.validateDonationAmount(xlmAmount, sanitizedDonor);
 
     // Validate and sanitize memo
     const memoResult = this.validateAndSanitizeMemo(memo);
 
     // Calculate analytics fee
-    const feeCalculation = calculateAnalyticsFee(amount);
+    const feeCalculation = calculateAnalyticsFee(xlmAmount);
 
     // Create transaction record
     const transaction = Transaction.create({
-      amount: amount,
+      amount: xlmAmount,
+      originalAmount: normalizedCurrency !== 'XLM' ? amount : undefined,
+      originalCurrency: normalizedCurrency !== 'XLM' ? normalizedCurrency : undefined,
       donor: sanitizedDonor,
       recipient: sanitizedRecipient,
       memo: memoResult.sanitized,

@@ -77,6 +77,29 @@ app.use('/stream', streamRoutes);
 app.use('/transactions', transactionRoutes);
 app.use('/api-keys', apiKeysRoutes);
 
+// Exchange rates endpoint
+app.get('/exchange-rates', async (req, res) => {
+  try {
+    const priceOracle = require('../services/PriceOracleService');
+    const rates = await priceOracle.getRates();
+    res.json({
+      success: true,
+      data: {
+        base: 'XLM',
+        rates,
+        supportedCurrencies: ['XLM', ...priceOracle.SUPPORTED_CURRENCIES.map(c => c.toUpperCase())],
+        cachedAt: new Date().toISOString()
+      }
+    });
+  } catch (err) {
+    log.error('APP', 'Failed to fetch exchange rates', { error: err.message });
+    res.status(503).json({
+      success: false,
+      error: { code: 'EXCHANGE_RATE_UNAVAILABLE', message: err.message }
+    });
+  }
+});
+
 // Health check endpoint
 app.get('/health', async (req, res) => {
   try {
