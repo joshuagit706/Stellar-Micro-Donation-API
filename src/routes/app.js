@@ -18,6 +18,7 @@ const statsRoutes = require('./stats');
 const streamRoutes = require('./stream');
 const transactionRoutes = require('./transaction');
 const apiKeysRoutes = require('./apiKeys');
+const feesRoutes = require('./fees');
 const { errorHandler, notFoundHandler } = require('../middleware/errorHandler');
 const logger = require('../middleware/logger');
 const { attachUserRole } = require('../middleware/rbac');
@@ -80,6 +81,7 @@ app.use('/stats', statsRoutes);
 app.use('/stream', streamRoutes);
 app.use('/transactions', transactionRoutes);
 app.use('/api-keys', apiKeysRoutes);
+app.use('/fees', feesRoutes);
 
 // Health check endpoint
 app.get('/health', async (req, res) => {

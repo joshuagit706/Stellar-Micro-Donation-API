@@ -59,6 +59,23 @@ module.exports = async () => {
       revoked_at INTEGER,
       created_at INTEGER NOT NULL
     )`);
+    await Database.run(`CREATE TABLE IF NOT EXISTS student_fees (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      studentId TEXT NOT NULL,
+      description TEXT NOT NULL,
+      totalAmount REAL NOT NULL,
+      paidAmount REAL NOT NULL DEFAULT 0,
+      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+    await Database.run(`CREATE TABLE IF NOT EXISTS fee_payments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      feeId INTEGER NOT NULL,
+      amount REAL NOT NULL,
+      note TEXT,
+      paidAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (feeId) REFERENCES student_fees(id)
+    )`);
     await Database.run(`CREATE TABLE IF NOT EXISTS audit_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       category TEXT NOT NULL,
