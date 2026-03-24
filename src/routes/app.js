@@ -38,6 +38,7 @@ const requestId = require('../middleware/requestId');
 const serviceContainer = require('../config/serviceContainer');
 const { payloadSizeLimiter, ENDPOINT_LIMITS } = require('../middleware/payloadSizeLimiter');
 const { createCorsMiddleware } = require('../middleware/cors');
+const { responseFormatterMiddleware } = require('../utils/responseFormatter');
 const {
   logStartupDiagnostics,
   logShutdownDiagnostics,
@@ -59,6 +60,9 @@ let replayCleanupTimer = null;
 
 // Middleware
 app.use(requestId);
+
+// Attach res.success / res.failure envelope helpers (must be after requestId)
+app.use(responseFormatterMiddleware());
 
 // CORS (must be before body parsers and route handlers)
 app.use(createCorsMiddleware());
