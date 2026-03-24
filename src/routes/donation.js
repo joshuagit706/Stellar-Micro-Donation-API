@@ -58,6 +58,12 @@ const createDonationSchema = validateSchema({
   body: {
     fields: {
       amount: { type: 'numberString', required: true, min: 0.0000001 },
+      currency: {
+        type: 'string',
+        required: false,
+        maxLength: 10,
+        nullable: true,
+      },
       donor: {
         type: 'string',
         required: false,
@@ -279,7 +285,7 @@ router.post('/send', donationRateLimiter, requireIdempotency, sendDonationSchema
  */
 router.post('/', donationRateLimiter, requireApiKey, requireIdempotency, createDonationSchema, async (req, res, next) => {
   try {
-    const { amount, donor, recipient, memo } = req.body;
+    const { amount, currency, donor, recipient, memo } = req.body;
 
     // Basic validation
     if (!amount || !recipient) {
@@ -308,6 +314,7 @@ router.post('/', donationRateLimiter, requireApiKey, requireIdempotency, createD
     // Delegate to service
     const transaction = await donationService.createDonationRecord({
       amount: amountValidation.value,
+      currency: currency || 'XLM',
       donor,
       recipient: resolvedRecipient,
       memo,
