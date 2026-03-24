@@ -20,6 +20,7 @@ const { TRANSACTION_STATES } = require('../utils/transactionStateMachine');
 const { ValidationError, NotFoundError, ERROR_CODES } = require('../utils/errors');
 const LimitService = require('./LimitService');
 const log = require('../utils/log');
+const priceOracle = require('./PriceOracleService');
 const { buildOverpaymentRecord } = require('../utils/overpaymentDetector');
 const memoCollisionDetector = require('../utils/memoCollisionDetector');
 const priceOracle = require('./PriceOracleService');

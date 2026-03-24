@@ -97,6 +97,8 @@ app.get('/exchange-rates', async (req, res) => {
         supportedCurrencies: ['XLM', ...priceOracle.SUPPORTED_CURRENCIES.map(c => c.toUpperCase())],
         cachedAt: new Date().toISOString(),
       },
+        cachedAt: new Date().toISOString()
+      }
     });
   } catch (err) {
     log.error('APP', 'Failed to fetch exchange rates', { error: err.message });
@@ -107,6 +109,12 @@ app.get('/exchange-rates', async (req, res) => {
   }
 });
 
+      error: { code: 'EXCHANGE_RATE_UNAVAILABLE', message: err.message }
+    });
+  }
+});
+
+// Health check endpoint
 // Health check endpoints
 app.get('/health', async (req, res) => {
   const health = await HealthCheckService.getFullHealth(stellarService);
