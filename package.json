@@ -41,6 +41,6 @@
     "madge": "^8.0.0",
     "nodemon": "^2.0.20",
     "sql.js": "^1.14.0",
-    "supertest": "^6.3.3"
+    "supertest": "^7.2.2"
   }
 }
