@@ -20,6 +20,7 @@ const WalletService = require('../services/WalletService');
 const { validateSchema } = require('../middleware/schemaValidation');
 const { parseCursorPaginationQuery } = require('../utils/pagination');
 const { sanitizeLabel, sanitizeName } = require('../utils/sanitizer');
+const { payloadSizeLimiter, ENDPOINT_LIMITS } = require('../middleware/payloadSizeLimiter');
 
 const walletService = new WalletService(require('../config/serviceContainer').getStellarService());
 const AuditLogService = require('../services/AuditLogService');
@@ -86,19 +87,7 @@ const walletPublicKeySchema = validateSchema({
  * POST /wallets
  * Create a new wallet with metadata. Auto-funds via Friendbot on testnet.
  */
-router.post('/', checkPermission(PERMISSIONS.WALLETS_CREATE), walletCreateSchema, (req, res, next) => {
-  try {
-    const { address, label, ownerName } = req.body;
-
-    if (!address) {
-      return res.status(400).json({
-        error: 'Missing required field: address'
-      });
-    }
-
-    // Use WalletService which applies comprehensive sanitization
-    const wallet = walletService.createWallet({ address, label, ownerName });
-router.post('/', checkPermission(PERMISSIONS.WALLETS_CREATE), walletCreateSchema, async (req, res) => {
+router.post('/', payloadSizeLimiter(ENDPOINT_LIMITS.wallet), checkPermission(PERMISSIONS.WALLETS_CREATE), walletCreateSchema, async (req, res, next) => {
   try {
     const { address, label, ownerName } = req.body;
 

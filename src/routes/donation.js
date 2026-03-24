@@ -22,6 +22,7 @@ const { validateRequiredFields, validateFloat, validateInteger } = require('../u
 const { validateSchema } = require('../middleware/schemaValidation');
 const { TRANSACTION_STATES } = require('../utils/transactionStateMachine');
 const { parseCursorPaginationQuery } = require('../utils/pagination');
+const { payloadSizeLimiter, ENDPOINT_LIMITS } = require('../middleware/payloadSizeLimiter');
 
 const { getStellarService } = require('../config/stellar');
 const DonationService = require('../services/DonationService');
@@ -144,7 +145,7 @@ const updateDonationStatusSchema = validateSchema({
  * Verify a donation transaction by hash
  * Rate limited: 30 requests per minute per IP
  */
-router.post('/verify', verificationRateLimiter, checkPermission(PERMISSIONS.DONATIONS_VERIFY), verifyDonationSchema, async (req, res) => {
+router.post('/verify', payloadSizeLimiter(ENDPOINT_LIMITS.singleDonation), verificationRateLimiter, checkPermission(PERMISSIONS.DONATIONS_VERIFY), verifyDonationSchema, async (req, res) => {
   try {
     const { transactionHash } = req.body;
     const verification = await donationService.verifyTransaction(transactionHash);
@@ -179,7 +180,7 @@ router.post('/verify', verificationRateLimiter, checkPermission(PERMISSIONS.DONA
  * Requires idempotency key to prevent duplicate transactions
  * Rate limited: 10 requests per minute per IP
  */
-router.post('/send', donationRateLimiter, requireIdempotency, sendDonationSchema, async (req, res) => {
+router.post('/send', payloadSizeLimiter(ENDPOINT_LIMITS.singleDonation), donationRateLimiter, requireIdempotency, sendDonationSchema, async (req, res) => {
   try {
     const { senderId, receiverId, amount, memo } = req.body;
 
@@ -285,7 +286,7 @@ router.post('/send', donationRateLimiter, requireIdempotency, sendDonationSchema
  * Donations with the same donor are grouped into multi-operation Stellar transactions.
  * Rate limited: 10 batch requests per minute per IP.
  */
-router.post('/batch', batchRateLimiter, requireApiKey, async (req, res, next) => {
+router.post('/batch', payloadSizeLimiter(ENDPOINT_LIMITS.batchDonation), batchRateLimiter, requireApiKey, async (req, res, next) => {
   try {
     const { donations } = req.body;
 
@@ -333,7 +334,7 @@ router.post('/batch', batchRateLimiter, requireApiKey, async (req, res, next) =>
  * POST /donations
  * Create a non-custodial donation record
  */
-router.post('/', donationRateLimiter, requireApiKey, requireIdempotency, createDonationSchema, async (req, res, next) => {
+router.post('/', payloadSizeLimiter(ENDPOINT_LIMITS.singleDonation), donationRateLimiter, requireApiKey, requireIdempotency, createDonationSchema, async (req, res, next) => {
   try {
     const { amount, currency, donor, recipient, memo } = req.body;
 
