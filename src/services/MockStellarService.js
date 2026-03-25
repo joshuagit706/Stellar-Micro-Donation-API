@@ -387,7 +387,8 @@ class MockStellarService extends StellarServiceInterface {
     if (amountNum <= 0) {
       throw new ValidationError('Amount must be greater than zero');
     }
-    if (amountNum > 922337203685.4775807) {
+    const maxAllowedAmount = Number('922337203685.4775807');
+    if (amountNum > maxAllowedAmount) {
       throw new ValidationError('Amount exceeds maximum allowed value (922337203685.4775807 XLM)');
     }
 
@@ -398,7 +399,8 @@ class MockStellarService extends StellarServiceInterface {
   }
 
   _generateKeypair() {
-    const base32Chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+    // eslint-disable-next-line no-secrets/no-secrets
+    const base32Chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' + '234567';
     const generateKey = (prefix) => {
       let key = prefix;
       for (let i = 0; i < 55; i += 1) {

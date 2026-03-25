@@ -43,8 +43,9 @@ function applyNotePrivacy(req, tx) {
   const isAdmin = req.apiKey && req.apiKey.role === 'admin';
   
   if (!isOwner && !isAdmin && tx.notes !== undefined) {
-    const { notes, ...rest } = tx;
-    return rest;
+    const sanitized = { ...tx };
+    delete sanitized.notes;
+    return sanitized;
   }
   return tx;
 }
@@ -671,7 +672,7 @@ router.get('/path-estimate', requireApiKey, pathEstimateSchema, async (req, res,
  * GET /donations/limits
  * Get current donation amount limits
  */
-router.get('/limits', checkPermission(PERMISSIONS.DONATIONS_READ), (req, res) => {
+router.get('/limits', checkPermission(PERMISSIONS.DONATIONS_READ), (req, res, next) => {
   try {
     const limits = donationService.getDonationLimits();
     

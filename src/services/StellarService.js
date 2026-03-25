@@ -229,7 +229,7 @@ class StellarService extends StellarServiceInterface {
         try {
           const existingTx = await this._executeWithRetry(
             () => this.server.transaction(txHash).call(),
-            'verifySubmittedTransaction'
+            'verify_tx_submission'
           );
 
           if (existingTx && existingTx.hash === txHash) {
