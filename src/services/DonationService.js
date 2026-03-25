@@ -23,7 +23,6 @@ const { paginateCollection } = require('../utils/pagination');
 const { checkConfirmations } = require('../utils/confirmationChecker');
 const { CONFIRMATION_LEDGER_THRESHOLD } = require('../config/confirmationThreshold');
 
-const MAX_MEMO_LENGTH = 28;
 const LimitService = require('./LimitService');
 const log = require('../utils/log');
 const priceOracle = require('./PriceOracleService');
@@ -102,7 +101,7 @@ class DonationService {
    * @param {string} params.requestId - Request ID for logging
    * @returns {Promise<Object>} Donation result with transaction details
    */
-  async sendCustodialDonation({ senderId, receiverId, amount, memo, notes, tags, apiKeyId, apiKeyRole = 'user', idempotencyKey, requestId }) {
+  async sendCustodialDonation({ senderId, receiverId, amount, memo, notes, tags, apiKeyId, campaign_id, idempotencyKey, requestId }) {
     log.debug('DONATION_SERVICE', 'Processing custodial donation', {
       requestId,
       senderId,
@@ -951,7 +950,13 @@ class DonationService {
     if (filters.tag) {
       transactions = transactions.filter(tx => tx.tags && tx.tags.includes(filters.tag));
     }
-    return paginateCollection(transactions, {
+
+    const sortBy = filters.sortBy || 'timestamp';
+    const order = filters.order || 'desc';
+    const useCustomSort = sortBy !== 'timestamp' || order !== 'desc';
+    const filteredTransactions = this.applyFilters(transactions, filters);
+
+    let result = paginateCollection(filteredTransactions, {
       ...pagination,
       timestampField: 'timestamp',
       idField: 'id',
@@ -960,9 +965,11 @@ class DonationService {
       ...(useCustomSort && { _presorted: true }),
     });
 
-    // paginateCollection always re-sorts by timestamp; re-apply custom sort to the page
     if (useCustomSort) {
-      result.data = this.applyFilters(result.data, { sortBy, order: order || 'desc' });
+      result = {
+        ...result,
+        data: this.applyFilters(result.data, { sortBy, order }),
+      };
     }
 
     const appliedFilters = {};
