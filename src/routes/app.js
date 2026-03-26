@@ -21,6 +21,7 @@ const transactionRoutes = require('./transaction');
 const apiKeysRoutes = require('./apiKeys');
 const feesRoutes = require('./fees');
 const featureFlagsAdminRoutes = require('./admin/featureFlags');
+const dbAdminRoutes = require('./admin/db');
 const retentionAdminRoutes = require('./admin/retention');
 const networkRoutes = require('./network');
 const webhooksRoutes = require('./webhooks');
@@ -41,7 +42,7 @@ const { validateRBAC } = require('../utils/rbacValidator');
 const log = require('../utils/log');
 const requestId = require('../middleware/requestId');
 const serviceContainer = require('../config/serviceContainer');
-const { payloadSizeLimiter, ENDPOINT_LIMITS } = require('../middleware/payloadSizeLimiter');
+const { payloadSizeLimiter } = require('../middleware/payloadSizeLimiter');
 const { createCorsMiddleware } = require('../middleware/cors');
 const { responseFormatterMiddleware } = require('../utils/responseFormatter');
 const {
@@ -152,6 +153,7 @@ app.use('/transactions', transactionRoutes);
 app.use('/api-keys', apiKeysRoutes);
 app.use('/fees', feesRoutes);
 app.use('/admin/feature-flags', featureFlagsAdminRoutes);
+app.use('/admin/db', dbAdminRoutes);
 app.use('/admin/retention', retentionAdminRoutes);
 app.use('/network', networkRoutes);
 app.use('/webhooks', webhooksRoutes);
@@ -172,7 +174,6 @@ app.get('/exchange-rates', async (req, res) => {
         rates,
         supportedCurrencies: ['XLM', ...priceOracle.SUPPORTED_CURRENCIES.map(c => c.toUpperCase())],
         cachedAt: new Date().toISOString(),
-      }
       },
     });
   } catch (err) {
