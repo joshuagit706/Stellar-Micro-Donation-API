@@ -491,6 +491,7 @@ class DonationService {
    * @param {string} params.idempotencyKey - Idempotency key
    * @returns {Object} Created transaction
    */
+  async createDonationRecord({ amount, currency = 'XLM', donor, recipient, memo, notes, tags, memoType = 'text', apiKeyId, apiKeyRole = 'user', idempotencyKey, receivedAmount, sessionId, campaign_id = null, memoEnvelope = null, encryptionMetadata = null }) {
   async createDonationRecord({ amount, currency = 'XLM', donor, recipient, memo, notes, tags, memoType = 'text', apiKeyId, apiKeyRole = 'user', idempotencyKey, receivedAmount, sessionId, anonymous = false, campaign_id }) {
   async createDonationRecord({
     amount,
@@ -678,6 +679,8 @@ class DonationService {
       tags: tags || [],
       apiKeyId: apiKeyId || null,
       idempotencyKey: idempotencyKey,
+      memoEnvelope: memoEnvelope || null,
+      encryptionMetadata: encryptionMetadata || null,
       analyticsFee: feeCalculation.fee,
       analyticsFeePercentage: feeCalculation.feePercentage,
       status: stellarResult ? TRANSACTION_STATES.CONFIRMED : TRANSACTION_STATES.PENDING,

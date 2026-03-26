@@ -119,6 +119,11 @@ const createDonationSchema = validateSchema({
         nullable: true,
         enum: ['text', 'hash', 'id', 'return'],
       },
+      encryptMemo: {
+        type: 'boolean',
+        required: false,
+        nullable: true,
+      },
       notes: {
         type: 'string',
         required: false,
@@ -440,6 +445,7 @@ router.post('/batch', payloadSizeLimiter(ENDPOINT_LIMITS.batchDonation), safeBat
  */
 router.post('/', payloadSizeLimiter(ENDPOINT_LIMITS.singleDonation), donationRateLimiter, requireApiKey, requireIdempotency, createDonationSchema, async (req, res, next) => {
   try {
+    const { amount, currency, donor, recipient, memo, memoType, notes, tags, encryptMemo } = req.body;
     const { amount, currency, donor, recipient, memo, memoType, notes, tags, anonymous } = req.body;
     const { amount, currency, donor, recipient, memo, memoType, notes, tags, sourceAsset, sourceAmount } = req.body;
 
@@ -491,6 +497,26 @@ router.post('/', payloadSizeLimiter(ENDPOINT_LIMITS.singleDonation), donationRat
       resolvedRecipient = await federation.resolveRecipient(recipient);
     }
 
+    // Optionally encrypt memo using recipient's Stellar public key (ECDH)
+    let memoEnvelope = null;
+    let encryptionMetadata = null;
+    if (encryptMemo && memo) {
+      try {
+        const memoEncryption = require('../utils/memoEncryption');
+        memoEnvelope = memoEncryption.encryptMemo(memo, resolvedRecipient);
+        encryptionMetadata = {
+          encrypted: true,
+          algorithm: memoEnvelope.alg,
+          nonce: memoEnvelope.iv,
+        };
+      } catch (encErr) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'MEMO_ENCRYPTION_FAILED', message: encErr.message }
+        });
+      }
+    }
+
     // Delegate to service
     const transaction = await donationService.createDonationRecord({
       amount: amountValidation.value,
@@ -503,6 +529,8 @@ router.post('/', payloadSizeLimiter(ENDPOINT_LIMITS.singleDonation), donationRat
       memoType: memoType || 'text',
       notes,
       tags,
+      memoEnvelope,
+      encryptionMetadata,
       idempotencyKey: req.idempotency.key,
       apiKeyId: req.apiKey ? req.apiKey.id : null,
       apiKeyRole: req.apiKey ? req.apiKey.role : (req.user?.role || 'user'),
@@ -527,6 +555,7 @@ router.post('/', payloadSizeLimiter(ENDPOINT_LIMITS.singleDonation), donationRat
       data: {
         verified: true,
         transactionHash: transaction.stellarTxId || transaction.id,
+        ...(encryptionMetadata && { encryptionMetadata }),
         ...(feeEstimate && {
           estimatedFee: feeEstimate.feeStroops,
           estimatedFeeXLM: feeEstimate.feeXLM,
@@ -820,6 +849,71 @@ router.post('/:id/receipt/email', requireApiKey, donationIdParamSchema, async (r
     if (error.status === 400) {
       return res.status(400).json({ success: false, error: { message: error.message } });
     }
+    next(error);
+  }
+});
+
+/**
+ * GET /donations/:id/memo/decrypt
+ * Decrypt an encrypted memo for a specific donation.
+ *
+ * Only the recipient (holder of the Stellar private key) can decrypt the memo.
+ * The caller must supply their Stellar secret key as a query parameter.
+ *
+ * Query params:
+ *   - recipientSecret {string} Stellar S... secret key of the recipient
+ *
+ * Security note: In production, memo decryption should be performed client-side
+ * so that private keys never leave the user's device. This endpoint is provided
+ * for server-side integrations and testing only.
+ */
+router.get('/:id/memo/decrypt', requireApiKey, donationIdParamSchema, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { recipientSecret } = req.query;
+
+    if (!recipientSecret) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'MISSING_FIELD', message: 'recipientSecret query parameter is required' }
+      });
+    }
+
+    const transaction = Transaction.getById(id);
+    if (!transaction) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: `Donation ${id} not found` }
+      });
+    }
+
+    if (!transaction.memoEnvelope) {
+      return res.status(422).json({
+        success: false,
+        error: { code: 'MEMO_NOT_ENCRYPTED', message: 'This donation does not have an encrypted memo' }
+      });
+    }
+
+    const memoEncryption = require('../utils/memoEncryption');
+    let plaintext;
+    try {
+      plaintext = memoEncryption.decryptMemo(transaction.memoEnvelope, recipientSecret);
+    } catch (decErr) {
+      return res.status(403).json({
+        success: false,
+        error: { code: 'DECRYPTION_FAILED', message: 'Unable to decrypt memo: invalid key or tampered data' }
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        donationId: id,
+        memo: plaintext,
+        algorithm: transaction.encryptionMetadata?.algorithm || 'ECDH-X25519-AES256GCM',
+      }
+    });
+  } catch (error) {
     next(error);
   }
 });
