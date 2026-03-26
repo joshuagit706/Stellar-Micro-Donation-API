@@ -26,8 +26,10 @@ const featureFlagsAdminRoutes = require('./admin/featureFlags');
 const createFeeBumpRouter = require('./admin/feeBump');
 const dbAdminRoutes = require('./admin/db');
 const retentionAdminRoutes = require('./admin/retention');
+const backupAdminRoutes = require('./admin/backup');
 const matchingProgramsAdminRoutes = require('./admin/matchingPrograms');
 const routingAdminRoutes = require('./admin/routing');
+const impactMetricsAdminRoutes = require('./admin/impactMetrics');
 const networkRoutes = require('./network');
 const webhooksRoutes = require('./webhooks');
 const campaignsRoutes = require('./campaigns');
@@ -136,6 +138,9 @@ app.use(helmet({
 // CORS (must be before body parsers and route handlers)
 app.use(createCorsMiddleware());
 
+// Geographic IP blocking (must be before body parsers)
+app.use(require('../middleware/geoBlock'));
+
 // Payload size limit (must be before body parsers)
 app.use(payloadSizeLimiter);
 
@@ -186,8 +191,11 @@ app.use('/fees', feesRoutes);
 app.use('/admin/feature-flags', featureFlagsAdminRoutes);
 app.use('/admin/db', dbAdminRoutes);
 app.use('/admin/retention', retentionAdminRoutes);
+app.use('/admin', backupAdminRoutes);
 app.use('/admin/matching-programs', matchingProgramsAdminRoutes);
 app.use('/admin/routing', routingAdminRoutes);
+app.use('/admin/impact-metrics', impactMetricsAdminRoutes);
+app.use('/admin/geo-blocking', require('./admin/geoBlocking'));
 
 // Fee bump admin route — lazy access to serviceContainer
 app.use('/admin/transactions', (req, res, next) => {
