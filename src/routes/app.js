@@ -63,6 +63,12 @@ const { runCleanup } = require('../jobs/cleanupJob');
 
 const app = express();
 
+// Configure trusted proxies for API Gateway integration
+const trustedProxies = process.env.TRUSTED_PROXIES
+  ? process.env.TRUSTED_PROXIES.split(',').map(ip => ip.trim())
+  : 'loopback';
+app.set('trust proxy', trustedProxies);
+
 // Initialize services from container
 const stellarService = serviceContainer.getStellarService();
 const reconciliationService = serviceContainer.getTransactionReconciliationService();
@@ -224,6 +230,9 @@ app.get('/health', async (req, res) => {
   const stellarConfig = require('../config/stellar');
   health.stellarEnvironment = stellarConfig.environment || 'testnet';
   health.stellarNetwork = stellarConfig.network || 'testnet';
+  health.clientIp = req.ip;
+  health.protocol = req.protocol;
+  health.requestId = req.id;
   
   const httpStatus = health.status === 'unhealthy' ? 503 : 200;
   return res.status(httpStatus).json(health);

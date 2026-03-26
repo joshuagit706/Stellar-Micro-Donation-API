@@ -1919,6 +1919,20 @@ class MockStellarService extends StellarServiceInterface {
     }
     return pub;
   }
+
+  // Interface compliance methods
+  isValidAddress(address) {
+    // Simple validation for mock: check format
+    return typeof address === 'string' && /^G[A-Z2-7]{55}$/.test(address);
+  }
+
+  stroopsToXlm(stroops) {
+    return (parseInt(stroops) / 10000000).toFixed(7);
+  }
+
+  xlmToStroops(xlm) {
+    return Math.floor(parseFloat(xlm) * 10000000).toString();
+  }
 }
 
 module.exports = MockStellarService;
