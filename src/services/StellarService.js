@@ -1124,6 +1124,81 @@ class StellarService extends StellarServiceInterface {
       return { transactionId: result.hash, ledger: result.ledger };
     }, 'claimBalance');
   }
+
+  // ─── Soroban Contract Methods ────────────────────────────────────────────────
+
+  /**
+   * Invoke a Soroban smart contract method via JSON-RPC 2.0.
+   * @param {string} contractId - The deployed contract address
+   * @param {string} method - The contract method name
+   * @param {Array} args - Arguments to pass to the method
+   * @returns {Promise<{status: string, returnValue: any, events: Array}>}
+   */
+  async invokeContract(contractId, method, args) {
+    if (!contractId || typeof contractId !== 'string' || contractId.trim() === '') {
+      throw new Error('contractId is required');
+    }
+    if (!method || typeof method !== 'string' || method.trim() === '') {
+      throw new Error('method is required');
+    }
+    if (!Array.isArray(args)) {
+      throw new Error('args must be an array');
+    }
+
+    const payload = {
+      jsonrpc: '2.0',
+      id: Date.now(),
+      method: 'sendTransaction',
+      params: { contractId, method, args },
+    };
+
+    const response = await axios.post(this.sorobanRpcUrl, payload, {
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    const rpcResult = response.data;
+    if (rpcResult.error) {
+      throw new Error(rpcResult.error.message || 'RPC error');
+    }
+
+    const result = rpcResult.result || {};
+    const invocationResult = {
+      status: result.status || 'success',
+      returnValue: result.returnValue !== undefined ? result.returnValue : null,
+      events: Array.isArray(result.events) ? result.events : [],
+    };
+
+    this._storeEvents(contractId, invocationResult.events);
+    return invocationResult;
+  }
+
+  /**
+   * Retrieve stored contract events for a given contract ID.
+   * @param {string} contractId - The contract identifier
+   * @param {number} [limit] - Maximum number of events to return
+   * @returns {Promise<Array>}
+   */
+  async getContractEvents(contractId, limit) {
+    if (!contractId || typeof contractId !== 'string' || contractId.trim() === '') {
+      throw new Error('contractId is required');
+    }
+    const events = this._eventStore.get(contractId) || [];
+    const sorted = [...events].reverse();
+    return limit !== undefined ? sorted.slice(0, limit) : sorted;
+  }
+
+  /**
+   * Append events to the internal event store.
+   * @private
+   * @param {string} contractId
+   * @param {Array} events
+   */
+  _storeEvents(contractId, events) {
+    if (!this._eventStore.has(contractId)) {
+      this._eventStore.set(contractId, []);
+    }
+    this._eventStore.get(contractId).push(...events);
+  }
 }
 
 module.exports = StellarService;
