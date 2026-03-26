@@ -54,6 +54,7 @@ const {
 const { parseCursorPaginationQuery } = require('../utils/pagination');
 const AuditLogService = require('../services/AuditLogService');
 const auditLogRetentionService = require('../services/AuditLogRetentionService');
+const { runCleanup } = require('../jobs/cleanupJob');
 
 const app = express();
 
@@ -429,6 +430,9 @@ async function startServer() {
       recurringDonationScheduler.start();
       reconciliationService.start();
       auditLogRetentionService.start();
+
+      runCleanup(); // Run once on startup
+    const cleanupInterval = setInterval(runCleanup, 24 * 60 * 60 * 1000);
       
       // Initialize and start network status monitoring
       try {
@@ -465,6 +469,8 @@ async function startServer() {
       isShuttingDown = true;
       log.info("SHUTDOWN", `Received ${signal}, starting graceful shutdown`);
       logShutdownDiagnostics(signal);
+
+      clearInterval(cleanupInterval); // Stop the timer so the process can exit
 
       const timeoutMs = parseInt(process.env.SHUTDOWN_TIMEOUT || '30000', 10);
       const forceExit = setTimeout(() => {
