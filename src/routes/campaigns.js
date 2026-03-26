@@ -186,6 +186,18 @@ router.get('/:id/donations', async (req, res, next) => {
 });
 
 /**
+ * GET /campaigns/:id/impact
+ * Returns the aggregate impact summary for a campaign based on its total donations
+ * and defined impact metrics.
+ */
+router.get('/:id/impact', async (req, res, next) => {
+  try {
+    const ImpactMetricService = require('../services/ImpactMetricService');
+    const summary = await ImpactMetricService.calculateCampaignImpact(parseInt(req.params.id, 10));
+    res.json({ success: true, data: summary });
+  } catch (error) {
+    next(error);
+  }
  * GET /campaigns/:id/progress/stream
  * Server-Sent Events (SSE) endpoint for real-time campaign progress updates.
  * 
