@@ -11,6 +11,7 @@
 
 const express = require('express');
 const helmet = require('helmet');
+const StellarSdk = require('stellar-sdk');
 const config = require('../config');
 const stellarConfig = require('../config/stellar');
 const donationRoutes = require('./donation');
@@ -33,6 +34,7 @@ const campaignsRoutes = require('./campaigns');
 const offersRoutes = require('./offers');
 const tagsRoutes = require('./tags');
 const leaderboardRoutes = require('./leaderboard');
+const authRoutes = require('./auth');
 const { errorHandler, notFoundHandler } = require('../middleware/errorHandler');
 const logger = require('../middleware/logger');
 const { attachUserRole } = require('../middleware/rbac');
@@ -199,6 +201,7 @@ app.use('/campaigns', campaignsRoutes);
 app.use('/offers', offersRoutes);
 app.use('/tags', tagsRoutes);
 app.use('/leaderboard', leaderboardRoutes);
+app.use('/auth', authRoutes);
 
 // Exchange rates endpoint
 app.get('/exchange-rates', async (req, res) => {
@@ -221,6 +224,24 @@ app.get('/exchange-rates', async (req, res) => {
       error: { code: 'EXCHANGE_RATE_UNAVAILABLE', message: err.message },
     });
   }
+});
+
+// SEP-0010 Stellar TOML discovery endpoint
+app.get('/.well-known/stellar.toml', (req, res) => {
+  const host = req.get('host') || 'localhost';
+  const scheme = req.protocol || 'https';
+  const authServer = `${scheme}://${host}/auth`;
+  const signingKey = process.env.SERVICE_SIGNING_KEY || process.env.SERVICE_SECRET_KEY || process.env.STELLAR_SECRET || '';
+
+  // Minimal SEP-0010 fields
+  const tomlContents = [];
+  tomlContents.push('VERSION = "1.0.0"');
+  tomlContents.push(`AUTH_SERVER = "${authServer}"`);
+  if (signingKey) {
+    tomlContents.push(`SIGNING_KEY = "${StellarSdk.Keypair.fromSecret(signingKey).publicKey()}"`);
+  }
+
+  res.type('text/plain').send(tomlContents.join('\n'));
 });
 
 // Health check endpoint

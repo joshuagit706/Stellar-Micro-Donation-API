@@ -12,6 +12,7 @@
 const { UnauthorizedError, ForbiddenError } = require('../utils/errors');
 const { hasPermission } = require('../models/permissions');
 const { validateApiKey } = require('../models/apiKeys');
+const { verifyAccessToken } = require('../services/JwtService');
 const config = require('../config');
 const AuditLogService = require('../services/AuditLogService');
 const perKeyRateLimit = require('./perKeyRateLimit');
@@ -219,7 +220,34 @@ exports.requireAdmin = () => {
 exports.attachUserRole = () => {
   return async (req, res, next) => {
     try {
-      // Priority 1: Use context from existing apiKey middleware if present
+      // Priority 1: Bearer JWT from Authorization header
+      if (req.headers && typeof req.headers.authorization === 'string' && req.headers.authorization.startsWith('Bearer ')) {
+        const token = req.headers.authorization.slice('Bearer '.length).trim();
+        const result = verifyAccessToken(token);
+
+        if (result.valid) {
+          const payload = result.payload;
+          const role = payload.role || 'user';
+
+          req.user = {
+            id: `jwt-${payload.sub || 'unknown'}`,
+            role,
+            name: `SEP10 User (${payload.sub || 'unknown'})`,
+            subject: payload.sub,
+            claims: payload,
+            authMethod: 'jwt'
+          };
+
+          return next();
+        }
+
+        return res.status(401).json({
+          success: false,
+          error: { code: 'UNAUTHORIZED', message: 'Invalid or expired bearer token' }
+        });
+      }
+
+      // Priority 2: Use context from existing apiKey middleware if present
       if (req.apiKey) {
         const role = req.apiKey.role || 'user';
         const keyId = req.apiKey.id || 'legacy';
@@ -232,7 +260,7 @@ exports.attachUserRole = () => {
           isLegacy: req.apiKey.isLegacy || false
         };
       }
-      // Priority 2: Standard Header Authentication
+      // Priority 3: Standard Header Authentication
       else if (req.headers && req.headers['x-api-key']) {
         const apiKey = req.headers['x-api-key'];
         const keyInfo = await validateApiKey(apiKey);
