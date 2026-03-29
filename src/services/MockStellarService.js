@@ -2684,6 +2684,44 @@ class MockStellarService extends StellarServiceInterface {
   }
 
   /**
+   * Get the home domain for a mock account.
+   * @param {string} publicKey
+   * @returns {Promise<string|null>}
+   */
+  async getHomeDomain(publicKey) {
+    const wallet = this.wallets.get(publicKey);
+    return (wallet && wallet.homeDomain) || null;
+  }
+
+  /**
+   * Set the home domain on a mock account.
+   * Validates domain format (same rules as StellarService) but skips network fetch.
+   * @param {string} sourceSecret
+   * @param {string} domain
+   * @returns {Promise<{hash: string, ledger: number}>}
+   */
+  async setHomeDomain(sourceSecret, domain) {
+    if (!domain || typeof domain !== 'string') {
+      throw new ValidationError('domain must be a non-empty string');
+    }
+    if (domain.length > 32) {
+      throw new ValidationError('domain must be 32 characters or fewer per Stellar spec');
+    }
+    if (!/^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/.test(domain)) {
+      throw new ValidationError('domain must be a valid hostname with no protocol or path');
+    }
+
+    const wallet = this._findWalletBySecret(sourceSecret);
+    if (!wallet) throw new ValidationError('Invalid secret key');
+
+    wallet.homeDomain = domain;
+
+    const hash = `mock_${crypto.randomBytes(16).toString('hex')}`;
+    const ledger = Math.floor(Math.random() * 1000000) + 1;
+    return { hash, ledger };
+  }
+
+  /**
    * Stream mock order book updates for a trading pair.
    *
    * Returns a close function. Call `mock.triggerOrderbookUpdate(key, data)` in tests
