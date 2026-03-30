@@ -20,6 +20,10 @@ const { thresholdsRouter } = require('./signers');
 const recoveryRoutes = require('./recovery');
 const statsRoutes = require('./stats');
 const streamRoutes = require('./stream');
+const recurringDonationScheduler = require('../services/RecurringDonationScheduler');
+const NetworkStatusService = require('../services/NetworkStatusService');
+const { router: networkRoutes, setService: setNetworkService } = require('./network');
+const docsRoutes = require('./docs');
 const transactionRoutes = require('./transaction');
 const apiKeysRoutes = require('./apiKeys');
 const apiKeyUsageRoutes = require('./apiKeyUsage');
@@ -36,14 +40,13 @@ const backupAdminRoutes = require('./admin/backup');
 const encryptionAdminRoutes = require('./admin/encryption');
 const matchingProgramsAdminRoutes = require('./admin/matchingPrograms');
 const corporateMatchingAdminRoutes = require('./admin/corporateMatching');
-const corporateMatchingRoutes = require('./corporateMatching');
+const { router: corporateMatchingRoutes } = require('./corporateMatching');
 const routingAdminRoutes = require('./admin/routing');
 const impactMetricsAdminRoutes = require('./admin/impactMetrics');
 const impactRoutes = require('./impact');
 const adminAnalyticsRoutes = require('./admin/analytics');
 const adminInspectRoutes = require('./admin/inspect');
 const reconciliationAdminRoutes = require('./admin/reconciliation');
-const networkRoutes = require('./network');
 const webhooksRoutes = require('./webhooks');
 const campaignsRoutes = require('./campaigns');
 const tiersRoutes = require('./tiers');
@@ -88,6 +91,7 @@ const authRoutes = require('./auth');
 const toolsRoutes = require('./tools');
 const { metricsMiddleware, registry } = require('../utils/metrics');
 const { attachSubscriptionServer } = require('../graphql');
+const sseManager = require('../services/SseManager');
 
 const app = express();
 
@@ -225,34 +229,6 @@ app.use('/donations/recurring', recurringDonationRoutes);
 app.use('/assets', assetRoutes);
 app.use('/stats', statsRoutes);
 app.use('/stream', streamRoutes);
-app.use('/transactions', transactionRoutes);
-app.use('/api-keys', apiKeyUsageRoutes);
-app.use('/api-keys', apiKeysRoutes);
-app.use('/channels', channelRoutes);
-app.use('/fees', feesRoutes);
-app.use('/admin/feature-flags', featureFlagsAdminRoutes);
-app.use('/admin/db', dbAdminRoutes);
-app.use('/admin/traces', adminTracesRoutes);
-app.use('/admin/retention', retentionAdminRoutes);
-app.use('/admin/encryption', encryptionAdminRoutes);
-app.use('/admin', backupAdminRoutes);
-app.use('/admin/matching-programs', matchingProgramsAdminRoutes);
-app.use('/admin/corporate-matching', corporateMatchingAdminRoutes);
-app.use('/corporate-matching', corporateMatchingRoutes);
-app.use('/admin/routing', routingAdminRoutes);
-app.use('/admin/impact-metrics', impactMetricsAdminRoutes);
-app.use('/impact', impactRoutes);
-app.use('/admin/analytics', adminAnalyticsRoutes);
-app.use('/admin/reconciliation', reconciliationAdminRoutes);
-app.use('/admin/geo-blocking', require('./admin/geoBlocking'));
-app.use('/admin/cors', require('./admin/corsOrigins'));
-
-// Fee bump admin route — lazy access to serviceContainer
-app.use('/admin/transactions', (req, res, next) => {
-  const serviceContainer = require('../config/serviceContainer');
-  const feeBumpRouter = createFeeBumpRouter(serviceContainer.getFeeBumpService());
-  feeBumpRouter(req, res, next);
-});
 app.use('/network', networkRoutes);
 app.use('/webhooks', webhooksRoutes);
 app.use('/campaigns', campaignsRoutes);
@@ -265,6 +241,9 @@ app.use('/leaderboard', leaderboardRoutes);
 app.use('/federation', federationLookupRoutes);
 app.use('/tools', toolsRoutes);
 app.use('/auth', authRoutes);
+app.use('/docs', docsRoutes);
+app.use('/transactions', transactionRoutes);
+app.use('/', corporateMatchingRoutes);
 
 // Exchange rates endpoint
 app.get('/exchange-rates', async (req, res) => {
@@ -394,62 +373,6 @@ app.get('/suspicious-patterns', require('../middleware/rbac').requireAdmin(), (r
     data: suspiciousPatternDetector.getMetrics(),
     timestamp: new Date().toISOString()
   });
-});
-
-// Idempotency stats endpoint (admin only)
-app.get('/admin/idempotency/stats', require('../middleware/rbac').requireAdmin(), async (req, res) => {
-  try {
-    const IdempotencyService = require('../services/IdempotencyService');
-    const stats = await IdempotencyService.getStats();
-    const oldest = await require('../utils/database').get(
-      `SELECT MIN(createdAt) as oldest FROM idempotency_keys WHERE datetime(expiresAt) > datetime('now')`
-    );
-    return res.json({
-      success: true,
-      data: {
-        ...stats,
-        oldestActiveKeyAge: oldest && oldest.oldest
-          ? Math.floor((Date.now() - new Date(oldest.oldest).getTime()) / 1000)
-          : null,
-      },
-    });
-  } catch (err) {
-    return res.status(500).json({ success: false, error: { message: err.message } });
-  }
-});
-
-// Replay detection stats endpoint (admin only)
-app.get('/admin/replay-stats', require('../middleware/rbac').requireAdmin(), (req, res) => {
-  try {
-    const replayDetectionMiddleware = require('../middleware/replayDetection');
-    const replayConfig = require('../config/replayDetection');
-    
-    // Get stats from tracking store with config for complete information
-    const stats = replayDetectionMiddleware.trackingStore.getStats({
-      windowSeconds: replayConfig.windowSeconds,
-      threshold: replayConfig.threshold
-    });
-    
-    res.json({
-      success: true,
-      data: stats,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    log.error('ADMIN', 'Failed to retrieve replay stats', {
-      error: error.message,
-      stack: error.stack
-    });
-    
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 'REPLAY_STATS_ERROR',
-        message: 'Failed to retrieve replay statistics'
-      },
-      timestamp: new Date().toISOString()
-    });
-  }
 });
 
 // Transaction inspection (admin only)
@@ -615,12 +538,17 @@ async function startServer() {
         reconciliationService.start();
         auditLogRetentionService.start();
         transactionSyncScheduler.start();
+        sseManager.start();
         
         runCleanup(); // Run once on startup
         cleanupInterval = setInterval(runCleanup, 24 * 60 * 60 * 1000);
       }
       
       // Initialize and start network status monitoring
+      networkStatusService.on('network.degraded', (status) => {
+        log.warn('NETWORK_STATUS', 'Network status degraded', { status });
+      });
+
       try {
         await networkStatusService.initialize();
       } catch (err) {
