@@ -526,11 +526,31 @@ app.use(errorHandler);
 
 // Handle unhandled promise rejections
 process.on('unhandledRejection', (reason, promise) => {
-  log.error('APP', 'Unhandled promise rejection', {
-    reason,
-    promise,
+  // Extract error details from reason object
+  const errorDetails = {
+    message: reason?.message || String(reason),
+    stack: reason?.stack,
+    name: reason?.name,
+    code: reason?.code,
     timestamp: new Date().toISOString()
-  });
+  };
+  
+  log.error('APP', 'Unhandled promise rejection', errorDetails);
+});
+
+process.on('uncaughtException', (error) => {
+  // Extract error details from error object
+  const errorDetails = {
+    message: error?.message || String(error),
+    stack: error?.stack,
+    name: error?.name,
+    code: error?.code,
+    timestamp: new Date().toISOString()
+  };
+  
+  log.error('APP', 'Uncaught exception', errorDetails);
+  // Exit process after logging uncaught exception
+  process.exit(1);
 });
 
 const PORT = config.server.port;
