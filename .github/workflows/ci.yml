@@ -16,6 +16,7 @@ jobs:
           node-version: '18'
           cache: 'npm'
       - run: npm ci
+      - run: ENCRYPTION_KEY=0000000000000000000000000000000000000000000000000000000000000000 API_KEYS=ci_key npm run validate-env
       - run: npm run test:coverage:ci
       - run: npm audit --audit-level=high
 
