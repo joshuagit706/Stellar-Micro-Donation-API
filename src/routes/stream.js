@@ -132,6 +132,19 @@ const streamCreateSchema = validateSchema({
             : `frequency must be one of: ${VALID_FREQUENCIES.join(', ')}`;
         },
       },
+      customIntervalDays: {
+        type: 'number',
+        required: false,
+        min: 1,
+      },
+    },
+    validate: (body) => {
+      if (body.frequency && body.frequency.toLowerCase() === 'custom') {
+        if (!body.customIntervalDays || !Number.isInteger(Number(body.customIntervalDays)) || Number(body.customIntervalDays) < 1) {
+          return 'customIntervalDays is required and must be a positive integer when frequency is "custom"';
+        }
+      }
+      return null;
     },
   },
 });
@@ -150,7 +163,7 @@ const streamScheduleIdSchema = validateSchema({
  */
 router.post('/create', payloadSizeLimiter(ENDPOINT_LIMITS.stream), requestTimeout(TIMEOUTS.stream), checkPermission(PERMISSIONS.STREAM_CREATE), streamCreateSchema, asyncHandler(async (req, res, next) => {
   try {
-    const { donorPublicKey, recipientPublicKey, amount, frequency } = req.body;
+    const { donorPublicKey, recipientPublicKey, amount, frequency, customIntervalDays } = req.body;
 
     // Validate required fields
     const requiredValidation = validateRequiredFields(
@@ -181,6 +194,17 @@ router.post('/create', payloadSizeLimiter(ENDPOINT_LIMITS.stream), requestTimeou
         success: false,
         error: frequencyValidation.error
       });
+    }
+
+    // Validate customIntervalDays when frequency is 'custom'
+    const normalizedFrequency = frequency.toLowerCase();
+    if (normalizedFrequency === 'custom') {
+      if (!customIntervalDays || !Number.isInteger(Number(customIntervalDays)) || Number(customIntervalDays) < 1) {
+        return res.status(400).json({
+          success: false,
+          error: 'customIntervalDays is required and must be a positive integer when frequency is "custom"'
+        });
+      }
     }
 
     // Check if donor exists
@@ -231,6 +255,9 @@ router.post('/create', payloadSizeLimiter(ENDPOINT_LIMITS.stream), requestTimeou
       case 'monthly':
         nextExecutionDate.setMonth(nextExecutionDate.getMonth() + 1);
         break;
+      case 'custom':
+        nextExecutionDate.setDate(nextExecutionDate.getDate() + parseInt(customIntervalDays, 10));
+        break;
     }
 
     // Insert recurring donation schedule
@@ -269,6 +296,7 @@ router.post('/create', payloadSizeLimiter(ENDPOINT_LIMITS.stream), requestTimeou
         recipient: schedule.recipientPublicKey,
         amount: schedule.amount,
         frequency: schedule.frequency,
+        ...(schedule.frequency === 'custom' && { customIntervalDays: parseInt(customIntervalDays, 10) }),
         nextExecution: schedule.nextExecutionDate,
         status: schedule.status,
         executionCount: schedule.executionCount
