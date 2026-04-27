@@ -30,7 +30,9 @@
     "openapi:check": "node scripts/check-openapi-sync.js",
     "test:load": "node tests/load/run-load-tests.js",
     "test:load:jest": "jest tests/implement-load-testing-suite.test.js --testTimeout=60000 --forceExit",
-    "test:smoke": "jest --config jest.config.smoke.js --forceExit"
+    "test:smoke": "jest --config jest.config.smoke.js --forceExit",
+    "changelog": "node scripts/generate-changelog.js",
+    "changelog:write": "node scripts/generate-changelog.js --write"
   },
   "dependencies": {
     "csv-parse": "^6.2.1",
