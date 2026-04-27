@@ -468,6 +468,18 @@ app.use('/admin/audit-logs/export', require('./admin/auditLogExport'));
 app.get('/admin/audit-logs', require('../middleware/rbac').requireAdmin(), asyncHandler(async (req, res, next) => {
   try {
     const pagination = parseCursorPaginationQuery(req.query);
+
+    // Allowlist validation — reject unknown enum values before they reach the DB layer
+    const VALID_CATEGORIES = new Set(Object.values(AuditLogService.CATEGORY));
+    const VALID_SEVERITIES = new Set(Object.values(AuditLogService.SEVERITY));
+
+    if (req.query.category && !VALID_CATEGORIES.has(req.query.category)) {
+      return res.status(400).json({ success: false, error: 'Invalid category value' });
+    }
+    if (req.query.severity && !VALID_SEVERITIES.has(req.query.severity)) {
+      return res.status(400).json({ success: false, error: 'Invalid severity value' });
+    }
+
     const filters = {
       category: req.query.category,
       action: req.query.action,
