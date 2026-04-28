@@ -387,10 +387,10 @@ module.exports = {
     windowMs: 60 * 1000,
     max: 30,
     keyGenerator: (req) => {
-      if (req.apiKey && req.apiKey.id && !req.apiKey.isLegacy) {
-        return `key:${req.apiKey.id}`;
-      }
-      return `ip:${req.ip}`;
+      const identifier = (req.apiKey && req.apiKey.id && !req.apiKey.isLegacy)
+        ? `key:${req.apiKey.id}`
+        : `ip:${req.ip}`;
+      return `rate_limit:${identifier}:stats`;
     },
     message: {
       success: false,
@@ -404,6 +404,7 @@ module.exports = {
     validate: false,
     handler: (req, res) => {
       const isKeyBased = req.apiKey && req.apiKey.id && !req.apiKey.isLegacy;
+      const retryAfter = Math.ceil((new Date(req.rateLimit.resetTime) - Date.now()) / 1000);
 
       AuditLogService.log({
         category: AuditLogService.CATEGORY.RATE_LIMITING,
@@ -425,6 +426,7 @@ module.exports = {
       });
 
       res.set('X-RateLimit-Identifier', isKeyBased ? 'api-key' : 'ip');
+      res.set('Retry-After', String(retryAfter));
       res.status(429).json({
         success: false,
         error: {
@@ -432,7 +434,7 @@ module.exports = {
           message: isKeyBased
             ? 'Too many stats requests for this API key. Please try again later.'
             : 'Too many stats requests from this IP. Please try again later.',
-          retryAfter: req.rateLimit.resetTime,
+          retryAfter,
           limitedBy: isKeyBased ? 'api-key' : 'ip',
         }
       });
