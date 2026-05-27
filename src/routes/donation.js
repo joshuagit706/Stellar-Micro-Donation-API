@@ -44,6 +44,9 @@
  *     responses:
  *       201:
  *         description: Donation created successfully
+ *         headers:
+ *           X-Request-ID:
+ *             $ref: '#/components/headers/XRequestID'
  *       400:
  *         description: Validation error
  *         content:
@@ -184,7 +187,9 @@ const { parseCursorPaginationQuery } = require('../utils/pagination');
 const { payloadSizeLimiter, ENDPOINT_LIMITS } = require('../middleware/payloadSizeLimiter');
 const { parseAssetInput } = require('../utils/stellarAsset');
 
+const asyncHandler = require('../utils/asyncHandler');
 const { getStellarService } = require('../config/stellar');
+const config = require('../config');
 const DonationService = require('../services/DonationService');
 const { calculateCostBreakdown } = require('../utils/costBreakdown');
 const LimitService = require('../services/LimitService');
@@ -192,8 +197,9 @@ const LimitService = require('../services/LimitService');
 const Transaction = require('./models/transaction');
 const donationValidator = require('../utils/donationValidator');
 const { buildErrorResponse } = require('../utils/validationErrorFormatter');
+const donationEvents = require('../events/donationEvents');
 
-const donationService = new DonationService();
+const donationService = new DonationService(getStellarService());
 
 const donationIdParamSchema = validateSchema({
   params: {
@@ -211,14 +217,384 @@ const updateDonationStatusSchema = validateSchema({
   },
   body: {
     fields: {
-      status: { type: 'string', required: true, enum: ['pending', 'confirmed', 'failed', 'cancelled'] }
+      status: { type: 'string', required: true, enum: ['pending', 'submitted', 'confirmed', 'failed'] }
+    }
+  }
+});
+
+const sendDonationSchema = validateSchema({
+  body: {
+    fields: {
+      senderId: { type: 'string', required: true, trim: true, minLength: 1 },
+      receiverId: { type: 'string', required: true, trim: true, minLength: 1 },
+      amount: { type: 'number', required: true },
+      memo: { type: 'string', required: false, maxLength: 28, nullable: true },
+      campaign_id: { type: 'string', required: false, nullable: true }
     }
   }
 });
 
 /**
- * GET /donations/cost-breakdown
- * Return an itemized cost breakdown for a proposed donation.
+ * POST /donations/send
+ * Send XLM from one wallet to another and record it
+ * Requires idempotency key to prevent duplicate transactions
+ * Rate limited: 10 requests per minute per IP
+ */
+router.post('/send', payloadSizeLimiter(ENDPOINT_LIMITS.singleDonation), donationRateLimiter, requireIdempotency, sendDonationSchema, async (req, res, next) => {
+  try {
+    const { senderId, receiverId, amount, memo, campaign_id } = req.body;
+
+    log.debug('DONATION_ROUTE', 'Processing donation request', {
+      requestId: req.id,
+      senderId,
+      receiverId,
+      amount,
+      hasMemo: !!memo
+    });
+
+    // Validation
+    const requiredValidation = validateRequiredFields(
+      { senderId, receiverId, amount },
+      ['senderId', 'receiverId', 'amount']
+    );
+
+    if (!requiredValidation.valid) {
+      return res.status(400).json({
+        success: false,
+        error: `Missing required fields: ${requiredValidation.missing.join(', ')}`
+      });
+    }
+
+    if (typeof senderId === 'object' || typeof receiverId === 'object') {
+      return res.status(400).json({
+        success: false,
+        error: 'Malformed request: senderId and receiverId must be valid IDs'
+      });
+    }
+
+    const amountValidation = validateFloat(amount);
+    if (!amountValidation.valid) {
+      return res.status(400).json({
+        success: false,
+        error: `Invalid amount: ${amountValidation.error}`
+      });
+    }
+
+    // Guard: reject donations to expired campaigns
+    if (campaign_id) {
+      const Database = require('../utils/database');
+      const campaign = await Database.get(
+        `SELECT id, end_date, status FROM campaigns WHERE id = ? AND deleted_at IS NULL`,
+        [campaign_id]
+      );
+      if (!campaign) {
+        return res.status(404).json({ success: false, error: 'Campaign not found' });
+      }
+      const isExpired =
+        campaign.status === 'expired' ||
+        (campaign.end_date && new Date(campaign.end_date) < new Date());
+      if (isExpired) {
+        return res.status(422).json({
+          success: false,
+          error: 'Campaign has ended',
+          campaignId: campaign.id,
+          endedAt: campaign.end_date
+        });
+      }
+    }
+
+    // Delegate to service
+    const result = await donationService.sendCustodialDonation({
+      senderId,
+      receiverId,
+      amount: amountValidation.value,
+      memo,
+      campaign_id,
+      idempotencyKey: req.idempotency.key,
+      requestId: req.id,
+      apiKeyId: req.apiKey ? req.apiKey.id : null,
+      apiKeyRole: req.apiKey ? req.apiKey.role : (req.user?.role || 'user')
+    });
+
+    // Inject remaining limit headers if available
+    if (result.remainingLimits) {
+      const { dailyRemaining, monthlyRemaining } = result.remainingLimits;
+      if (dailyRemaining !== null) res.setHeader('X-Donation-Daily-Remaining', dailyRemaining);
+      if (monthlyRemaining !== null) res.setHeader('X-Donation-Monthly-Remaining', monthlyRemaining);
+    }
+
+    // Mark processing complete
+    if (req.markLifecycleStage) {
+      req.markLifecycleStage(LIFECYCLE_STAGES.PROCESSED);
+    }
+
+    const response = {
+      success: true,
+      data: {
+        ...result,
+        transactionHash: result.stellarTxId || null,
+      },
+    };
+
+    await storeIdempotencyResponse(req, response);
+    res.status(201).json(response);
+  } catch (error) {
+    log.error('DONATION_ROUTE', 'Failed to send donation', {
+      requestId: req.id,
+      error: error.message,
+      stack: error.stack
+    });
+
+    // Handle duplicate donation gracefully
+    if (error.name === 'DuplicateError') {
+      return res.status(409).json({
+        success: false,
+        error: {
+          code: error.code,
+          message: error.message
+        }
+      });
+    }
+
+    // Pass business logic and other structured errors to the global error handler
+    if (error.statusCode) {
+      return next(error);
+    }
+
+    res.status(500).json({
+      success: false,
+      error: 'Failed to send donation',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * POST /donations/batch
+ * Create up to 100 donations in a single request.
+ * Donations with the same donor are grouped into multi-operation Stellar transactions.
+ * Rate limited: 10 batch requests per minute per IP.
+ */
+router.post('/batch', payloadSizeLimiter(ENDPOINT_LIMITS.batchDonation), batchRateLimiter, requireApiKey, async (req, res, next) => {
+  try {
+    const { donations } = req.body;
+
+    if (!Array.isArray(donations) || donations.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'donations must be a non-empty array' }
+      });
+    }
+
+    if (donations.length > 100) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'donations array must not exceed 100 items' }
+      });
+    }
+
+    // Basic per-item validation
+    for (let i = 0; i < donations.length; i++) {
+      const d = donations[i];
+      if (!d.amount || !d.recipient) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'VALIDATION_ERROR', message: `donations[${i}]: amount and recipient are required` }
+        });
+      }
+    }
+
+    const results = await donationService.processBatch(donations);
+
+    const succeeded = results.filter(r => r.success).length;
+    const failed = results.length - succeeded;
+
+    res.status(207).json({
+      success: true,
+      summary: { total: results.length, succeeded, failed },
+      results
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+const config = require('../config');
+
+const createDonationSchema = validateSchema({
+  body: {
+    fields: {
+      amount: { 
+        type: 'number', 
+        required: true,
+        min: config.donations.minAmount,
+        max: config.donations.maxAmount,
+        validate: (value) => {
+          if (!Number.isFinite(value)) return 'Amount must be a finite number';
+          if (value <= 0) return 'Amount must be greater than zero';
+          return true;
+        }
+      },
+      recipient: { type: 'string', required: true, trim: true, minLength: 1 },
+      currency: { type: 'string', required: false, nullable: true },
+      donor: { type: 'string', required: false, nullable: true },
+      memo: { type: 'string', required: false, maxLength: 28, nullable: true },
+      memoType: { type: 'string', required: false, nullable: true },
+      notes: { type: 'string', required: false, nullable: true },
+      tags: { type: 'array', required: false, nullable: true },
+      sourceAsset: { type: 'string', required: false, nullable: true },
+      sourceAmount: { 
+        type: 'number', 
+        required: false, 
+        nullable: true,
+        min: config.donations.minAmount,
+        max: config.donations.maxAmount,
+        validate: (value) => {
+          if (value === null || value === undefined) return true;
+          if (!Number.isFinite(value)) return 'Source amount must be a finite number';
+          if (value <= 0) return 'Source amount must be greater than zero';
+          return true;
+        }
+      }
+    }
+  }
+});
+
+/**
+ * POST /donations
+ * Create a non-custodial donation record
+ */
+router.post('/', payloadSizeLimiter(ENDPOINT_LIMITS.singleDonation), donationRateLimiter, requireApiKey, requireIdempotency, createDonationSchema, async (req, res, next) => {
+  try {
+    const { amount, currency, donor, recipient, memo, memoType, notes, tags, sourceAsset, sourceAmount } = req.body;
+
+    // Basic validation
+    if (!amount || !recipient) {
+      throw new ValidationError('Missing required fields: amount, recipient', null, ERROR_CODES.MISSING_REQUIRED_FIELD);
+    }
+
+    if (typeof recipient !== 'string' || (donor && typeof donor !== 'string')) {
+      return res.status(400).json({
+        error: 'Malformed request: donor and recipient must be strings'
+      });
+    }
+
+    const amountValidation = validateFloat(amount);
+    if (!amountValidation.valid) {
+      return res.status(400).json({
+        error: `Invalid amount: ${amountValidation.error}`
+      });
+    }
+
+    let sourceAmountValidation = null;
+    let normalizedSourceAsset = null;
+    if (sourceAsset || sourceAmount) {
+      normalizedSourceAsset = parseAssetInput(sourceAsset, 'sourceAsset');
+      sourceAmountValidation = validateFloat(sourceAmount);
+      if (!sourceAmountValidation.valid) {
+        return res.status(400).json({
+          error: `Invalid sourceAmount: ${sourceAmountValidation.error}`
+        });
+      }
+    }
+
+    // Validate memo type + value combination
+    if (memo || memoType) {
+      const memoValidator = require('../utils/memoValidator');
+      const memoValidation = memoValidator.validateWithType(memo || '', memoType || 'text');
+      if (!memoValidation.valid) {
+        return res.status(400).json({
+          success: false,
+          error: { code: memoValidation.code, message: memoValidation.error }
+        });
+      }
+    }
+
+    // Resolve federation address if needed (e.g. alice*example.com → GABC...)
+    let resolvedRecipient = recipient;
+    if (federation.isFederationAddress(recipient)) {
+      resolvedRecipient = await federation.resolveRecipient(recipient);
+    }
+
+    // Optionally encrypt memo using recipient's Stellar public key (ECDH)
+    let memoEnvelope = null;
+    let encryptionMetadata = null;
+    if (encryptMemo && memo) {
+      try {
+        const memoEncryption = require('../utils/memoEncryption');
+        memoEnvelope = memoEncryption.encryptMemo(memo, resolvedRecipient);
+        encryptionMetadata = {
+          encrypted: true,
+          algorithm: memoEnvelope.alg,
+          nonce: memoEnvelope.iv,
+        };
+      } catch (encErr) {
+        return res.status(400).json({
+          success: false,
+          error: { code: 'MEMO_ENCRYPTION_FAILED', message: encErr.message }
+        });
+      }
+    }
+
+    // Delegate to service
+    const transaction = await donationService.createDonationRecord({
+      amount: amountValidation.value,
+      currency: currency || 'XLM',
+      donor,
+      recipient: resolvedRecipient,
+      memo,
+      sourceAsset: normalizedSourceAsset,
+      sourceAmount: sourceAmountValidation ? sourceAmountValidation.value : undefined,
+      memoType: memoType || 'text',
+      notes,
+      tags,
+      memoEnvelope,
+      encryptionMetadata,
+      idempotencyKey: req.idempotency.key,
+      apiKeyId: req.apiKey ? req.apiKey.id : null,
+      apiKeyRole: req.apiKey ? req.apiKey.role : (req.user?.role || 'user'),
+      anonymous: anonymous === true,
+    });
+
+    // Estimate fee for informational purposes (non-blocking)
+    let feeEstimate = null;
+    try {
+      feeEstimate = await stellarService.estimateFee(1);
+    } catch (_err) {
+      // Fee estimation is best-effort; don't fail the request
+    }
+
+    // Mark processing complete
+    if (req.markLifecycleStage) {
+      req.markLifecycleStage(LIFECYCLE_STAGES.PROCESSED);
+    }
+
+    const response = {
+      success: true,
+      data: {
+        verified: true,
+        transactionHash: transaction.stellarTxId || transaction.id,
+        ...(encryptionMetadata && { encryptionMetadata }),
+        ...(feeEstimate && {
+          estimatedFee: feeEstimate.feeStroops,
+          estimatedFeeXLM: feeEstimate.feeXLM,
+          ...(feeEstimate.surgeProtection && {
+            feeWarning: 'Network fees are elevated (surge pricing active).'
+          }),
+        }),
+      }
+    };
+
+    await storeIdempotencyResponse(req, response);
+    res.status(201).json(response);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /donations/verify-anonymous
+ * Allow a donor to prove their anonymous donation using their wallet address.
  *
  * Query parameters:
  *   @param {string}  amount              - Donation amount in XLM (required, > 0)
@@ -405,6 +781,385 @@ router.get('/:id/certificate', checkPermission(PERMISSIONS.DONATIONS_READ), dona
 });
 
 /**
+ * POST /donations
+ * Create a new donation.
+ * Requires Idempotency-Key header (UUID v4) to prevent duplicate donations from network retries.
+ */
+// In-memory per-donor serialization lock to prevent TOCTOU on daily limit checks (#806).
+// Acceptable for single-instance deployments; replace with a distributed lock for multi-instance.
+const _donorLocks = new Map();
+async function withDonorLock(donorId, fn) {
+  const prev = _donorLocks.get(donorId) || Promise.resolve();
+  let release;
+  const next = new Promise(r => { release = r; });
+  _donorLocks.set(donorId, next);
+  try {
+    await prev;
+    return await fn();
+  } finally {
+    release();
+    if (_donorLocks.get(donorId) === next) _donorLocks.delete(donorId);
+  }
+}
+
+router.post('/', donationRateLimiter, checkPermission(PERMISSIONS.DONATIONS_CREATE), requireIdempotency, payloadSizeLimiter(ENDPOINT_LIMITS.singleDonation), asyncHandler(async (req, res, next) => {
+  try {
+    const { senderId, receiverId, amount, memo } = req.body;
+
+    if (!senderId || !receiverId || !amount) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: senderId, receiverId, amount'
+      });
+    }
+
+    const amountValidation = validateFloat(amount);
+    if (!amountValidation.valid) {
+      return res.status(400).json({ success: false, error: `Invalid amount: ${amountValidation.error}` });
+    }
+
+    // Validate memo byte length per Stellar MEMO_TEXT spec (max 28 bytes)
+    if (memo !== undefined && memo !== null && memo !== '') {
+      const MemoValidator = require('../utils/memoValidator');
+      const memoValidation = MemoValidator.validate(memo);
+      if (!memoValidation.valid) {
+        return res.status(400).json({ success: false, error: 'Memo text must be 28 bytes or less' });
+      }
+    }
+
+    // #806: enforce maxDailyPerDonor limit with per-donor serialization to prevent TOCTOU
+    const config = require('../config');
+    const globalDailyMax = config.donations.maxDailyPerDonor;
+
+    // Compute rate-limit header values (best-effort; 0 = unlimited)
+    let dailyLimit = null;
+    let dailyUsed = 0;
+    if (globalDailyMax > 0) {
+      dailyUsed = await LimitService.getDailyTotal(senderId);
+      dailyLimit = globalDailyMax;
+    }
+
+    // Set X-RateLimit-* headers on every POST /donations response
+    const resetsAt = new Date();
+    resetsAt.setUTCHours(24, 0, 0, 0); // midnight UTC next day
+    if (dailyLimit !== null) {
+      res.set('X-RateLimit-Limit', String(dailyLimit));
+      res.set('X-RateLimit-Remaining', String(Math.max(0, dailyLimit - dailyUsed)));
+      res.set('X-RateLimit-Reset', String(Math.floor(resetsAt.getTime() / 1000)));
+    }
+
+    // Enforce the limit inside a per-donor lock to prevent concurrent bypass
+    if (globalDailyMax > 0) {
+      try {
+        await withDonorLock(String(senderId), () =>
+          LimitService.checkLimits(senderId, amountValidation.value)
+        );
+      } catch (limitErr) {
+        if (limitErr && limitErr.details && limitErr.details.limit !== undefined) {
+          const { limit, used, remaining } = limitErr.details;
+          return res.status(429).json({
+            error: 'Daily donation limit exceeded',
+            limit,
+            used,
+            remaining: remaining !== undefined ? remaining : Math.max(0, limit - used),
+            resetsAt: resetsAt.toISOString(),
+          });
+        }
+        return next(limitErr);
+      }
+    }
+
+    const result = await donationService.sendCustodialDonation({
+      senderId,
+      receiverId,
+      amount: amountValidation.value,
+      memo: memo || null,
+      idempotencyKey: req.idempotency && req.idempotency.key,
+      requestId: req.id,
+    });
+
+    const response = {
+      success: true,
+      data: {
+        ...result,
+        transactionHash: result.stellarTxId || null,
+      },
+    };
+    await storeIdempotencyResponse(req, response);
+
+    return res.status(201).json(response);
+  } catch (error) {
+    next(error);
+  }
+}));
+
+function formatBatchDonationError(index, code, message) {
+  return {
+    success: false,
+    index,
+    error: {
+      code,
+      message,
+    },
+  };
+}
+
+function formatBatchDonationSuccess(index, data) {
+  return {
+    success: true,
+    index,
+    data,
+  };
+}
+
+router.post('/batch', requireApiKey, batchRateLimiter, checkPermission(PERMISSIONS.DONATIONS_CREATE), payloadSizeLimiter(ENDPOINT_LIMITS.batchDonation), asyncHandler(async (req, res, next) => {
+  try {
+    const donations = req.body;
+
+    if (!Array.isArray(donations)) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_PAYLOAD',
+          message: 'Request body must be an array of donation objects'
+        }
+      });
+    }
+
+    if (donations.length === 0 || donations.length > 100) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_BATCH_SIZE',
+          message: 'Batch must contain between 1 and 100 donation objects'
+        }
+      });
+    }
+
+    const results = [];
+
+    for (let index = 0; index < donations.length; index += 1) {
+      const donation = donations[index];
+
+      if (!donation || typeof donation !== 'object' || Array.isArray(donation)) {
+        results.push(formatBatchDonationError(index, 'INVALID_DONATION', 'Each batch item must be an object')); 
+        continue;
+      }
+
+      const missingFields = [];
+      if (donation.senderId === undefined || donation.senderId === null) missingFields.push('senderId');
+      if (donation.receiverId === undefined || donation.receiverId === null) missingFields.push('receiverId');
+      if (donation.amount === undefined || donation.amount === null) missingFields.push('amount');
+
+      if (missingFields.length > 0) {
+        results.push(formatBatchDonationError(index, 'MISSING_FIELDS', `Missing required fields: ${missingFields.join(', ')}`));
+        continue;
+      }
+
+      const senderIdValidation = validateInteger(donation.senderId, { min: 1 });
+      if (!senderIdValidation.valid) {
+        results.push(formatBatchDonationError(index, 'INVALID_SENDER_ID', `Invalid senderId: ${senderIdValidation.error}`));
+        continue;
+      }
+
+      const receiverIdValidation = validateInteger(donation.receiverId, { min: 1 });
+      if (!receiverIdValidation.valid) {
+        results.push(formatBatchDonationError(index, 'INVALID_RECEIVER_ID', `Invalid receiverId: ${receiverIdValidation.error}`));
+        continue;
+      }
+
+      const amountValidation = validateFloat(donation.amount);
+      if (!amountValidation.valid) {
+        results.push(formatBatchDonationError(index, 'INVALID_AMOUNT', `Invalid amount: ${amountValidation.error}`));
+        continue;
+      }
+
+      if (donation.memo !== undefined && donation.memo !== null && donation.memo !== '') {
+        if (typeof donation.memo !== 'string') {
+          results.push(formatBatchDonationError(index, 'INVALID_MEMO', 'Memo must be a string')); 
+          continue;
+        }
+        const MemoValidator = require('../utils/memoValidator');
+        const memoValidation = MemoValidator.validate(donation.memo);
+        if (!memoValidation.valid) {
+          results.push(formatBatchDonationError(index, 'INVALID_MEMO', 'Memo text must be 28 bytes or less'));
+          continue;
+        }
+      }
+
+      try {
+        const result = await donationService.sendCustodialDonation({
+          senderId: senderIdValidation.value,
+          receiverId: receiverIdValidation.value,
+          amount: amountValidation.value,
+          memo: donation.memo || null,
+          notes: donation.notes || null,
+          tags: donation.tags || null,
+          apiKeyId: req.apiKey?.id,
+          requestId: req.id,
+        });
+        results.push(formatBatchDonationSuccess(index, result));
+      } catch (error) {
+        const code = error.code || 'DONATION_FAILED';
+        const message = error.message || 'Donation processing failed';
+        results.push(formatBatchDonationError(index, code, message));
+      }
+    }
+
+    return res.status(207).json({
+      success: true,
+      results,
+    });
+  } catch (error) {
+    next(error);
+  }
+}));
+
+/**
+ * GET /donations
+ * List all donations with optional pagination.
+ */
+router.get('/', checkPermission(PERMISSIONS.DONATIONS_READ), asyncHandler(async (req, res, next) => {
+  try {
+    // #798: validate ?sort param
+    const VALID_SORT = ['id:asc', 'id:desc', 'timestamp:asc', 'timestamp:desc', 'amount:asc', 'amount:desc'];
+    const sort = req.query.sort;
+    if (sort !== undefined && !VALID_SORT.includes(sort)) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_SORT',
+          message: `Invalid sort value. Valid options: ${VALID_SORT.join(', ')}`,
+        },
+      });
+    }
+
+    const pagination = parseCursorPaginationQuery(req.query);
+    const [sortBy, order] = sort ? sort.split(':') : ['timestamp', 'desc'];
+
+    // #766: parse filter params from query string
+    const { status, from, to, minAmount, maxAmount } = req.query;
+
+    // Support comma-separated status values (e.g. ?status=pending,processing)
+    let statusFilter;
+    if (status) {
+      const statuses = status.split(',').map(s => s.trim()).filter(Boolean);
+      statusFilter = statuses.length === 1 ? statuses[0] : statuses;
+    }
+
+    const filters = {
+      sortBy,
+      order,
+      ...(statusFilter !== undefined && { status: statusFilter }),
+      ...(from && { startDate: from }),
+      ...(to && { endDate: to }),
+      ...(minAmount !== undefined && { minAmount }),
+      ...(maxAmount !== undefined && { maxAmount }),
+    };
+
+    const result = donationService.getPaginatedDonations(pagination, filters);
+    res.setHeader('X-Total-Count', String(result.totalCount));
+
+    if (req.query.envelope === 'true') {
+      return res.json({
+        data: result.data,
+        pagination: {
+          total: result.totalCount,
+          limit: result.meta.limit,
+          hasMore: result.meta.next_cursor !== null,
+          next_cursor: result.meta.next_cursor,
+          prev_cursor: result.meta.prev_cursor,
+        },
+      });
+    }
+
+    res.json({ success: true, data: result.data, count: result.data.length, meta: result.meta });
+  } catch (error) {
+    next(error);
+  }
+}));
+
+/**
+ * GET /donations/pending (#795)
+ * List donations currently in 'pending' state with stuck-transaction detection.
+ *
+ * Authorization:
+ *   - Regular users: see only their own pending donations (matched by donor field)
+ *   - Admin users: see all pending donations + summary object
+ *
+ * Query params:
+ *   - stuckThresholdSeconds {integer} override stuck threshold (default 600)
+ */
+const STUCK_THRESHOLD_SECONDS = 600; // 10 minutes
+
+router.get('/pending', checkPermission(PERMISSIONS.DONATIONS_READ), asyncHandler(async (req, res, next) => {
+  try {
+    const isAdmin = req.user && req.user.role === 'admin';
+    const stuckThreshold = parseInt(req.query.stuckThresholdSeconds, 10) || STUCK_THRESHOLD_SECONDS;
+    const now = Date.now();
+
+    let pending = Transaction.getByStatus('pending');
+
+    // Non-admin users see only their own pending donations
+    if (!isAdmin) {
+      const userKey = req.user && (req.user.publicKey || req.user.id);
+      if (userKey) {
+        pending = pending.filter(tx => tx.donor === userKey);
+      } else {
+        pending = [];
+      }
+    }
+
+    const enriched = pending.map(tx => {
+      const submittedAt = tx.statusUpdatedAt || tx.timestamp;
+      const pendingDurationSeconds = submittedAt
+        ? Math.floor((now - new Date(submittedAt).getTime()) / 1000)
+        : 0;
+      const isStuck = pendingDurationSeconds >= stuckThreshold;
+
+      const humanDuration = (() => {
+        const s = pendingDurationSeconds;
+        if (s < 60) return `${s} seconds`;
+        if (s < 3600) return `${Math.floor(s / 60)} minutes`;
+        return `${Math.floor(s / 3600)} hours`;
+      })();
+
+      return {
+        id: tx.id,
+        amount: tx.amount,
+        donorPublicKey: tx.donor || null,
+        recipientPublicKey: tx.recipient || null,
+        stellarTxHash: tx.stellarTxId || null,
+        submittedAt: submittedAt || null,
+        pendingDurationSeconds,
+        pendingDurationHuman: humanDuration,
+        retryCount: tx.feeBumpCount || 0,
+        isStuck,
+        stuckThresholdSeconds: stuckThreshold,
+      };
+    });
+
+    const response = { data: enriched };
+
+    if (isAdmin) {
+      const stuckCount = enriched.filter(tx => tx.isStuck).length;
+      const oldestPendingSeconds = enriched.length > 0
+        ? Math.max(...enriched.map(tx => tx.pendingDurationSeconds))
+        : 0;
+      response.summary = {
+        total: enriched.length,
+        stuckCount,
+        oldestPendingSeconds,
+      };
+    }
+
+    res.json(response);
+  } catch (error) {
+    next(error);
+  }
+}));
+
+/**
  * GET /donations/recent
  * Get recent donations, ordered by creation date descending.
  * Must be registered before /:id to prevent Express matching "recent" as an id.
@@ -416,11 +1171,149 @@ router.get('/recent', checkPermission(PERMISSIONS.DONATIONS_READ), asyncHandler(
   try {
     const limit = Math.min(parseInt(req.query.limit, 10) || 10, 100);
     const Database = require('../utils/database');
-    const rows = await Database.query(
-      `SELECT * FROM transactions ORDER BY timestamp DESC LIMIT ?`,
-      [limit]
-    );
+    const [rows, countRow] = await Promise.all([
+      Database.query(`SELECT * FROM transactions ORDER BY timestamp DESC LIMIT ?`, [limit]),
+      Database.get(`SELECT COUNT(*) AS total FROM transactions`),
+    ]);
+    res.setHeader('X-Total-Count', String(countRow ? countRow.total : rows.length));
     res.json({ success: true, data: rows, count: rows.length });
+  } catch (error) {
+    next(error);
+  }
+}));
+
+/**
+ * POST /donations/verify
+ * Verify a transaction on the Stellar blockchain.
+ * Non-admin callers must provide their walletAddress and be the sender or recipient.
+ */
+router.post('/verify', verificationRateLimiter, checkPermission(PERMISSIONS.DONATIONS_READ), asyncHandler(async (req, res, next) => {
+  try {
+    const { transactionHash, walletAddress } = req.body;
+
+    if (!transactionHash) {
+      return res.status(400).json({ success: false, error: { code: 'MISSING_FIELD', message: 'transactionHash is required' } });
+    }
+
+    const result = await donationService.verifyTransaction(transactionHash);
+
+    // Admins can verify any transaction; non-admins must own it
+    const isAdmin = req.user && req.user.role === 'admin';
+    if (!isAdmin) {
+      if (!walletAddress) {
+        return res.status(400).json({ success: false, error: { code: 'MISSING_FIELD', message: 'walletAddress is required' } });
+      }
+      const tx = result.transaction;
+      const isOwner = tx && (tx.source === walletAddress || tx.destination === walletAddress);
+      if (!isOwner) {
+        return res.status(403).json({ success: false, error: { code: 'FORBIDDEN', message: 'You are not authorized to verify this transaction' } });
+      }
+    }
+
+    return res.json({ success: true, data: result });
+  } catch (error) {
+    next(error);
+  }
+}));
+
+/**
+ * GET /donations/:id/status
+ * Server-Sent Events (SSE) endpoint for real-time donation status updates.
+ * Opens a long-lived HTTP connection and pushes status_update events as the
+ * donation progresses through its lifecycle (pending → processing → completed/failed).
+ *
+ * Authentication: Requires API key
+ * Authorization: Users may only stream their own donations; admins may stream any donation
+ * Auto-close: Connection closes when donation reaches terminal state (completed/failed)
+ * Timeout: Connection closes after 5 minutes regardless of state
+ * Keepalive: Sends comment every 15 seconds to prevent proxy timeouts
+ * Reconnection: Instructs clients to reconnect after 3 seconds if connection drops
+ */
+router.get('/:id/status', requireApiKey, donationIdParamSchema, asyncHandler(async (req, res, next) => {
+  const donationId = req.params.id;
+
+  try {
+    // Fetch donation to verify it exists and check authorization
+    const donation = donationService.getDonationById(donationId);
+
+    // Authorization: users can only stream their own donations, admins can stream any
+    const isAdmin = req.apiKey?.role === 'admin';
+    const userOwns = donation.senderId === req.apiKey?.id || donation.receiverId === req.apiKey?.id;
+    if (!isAdmin && !userOwns) {
+      return res.status(403).json({
+        success: false,
+        error: { code: 'FORBIDDEN', message: 'You do not have permission to stream this donation' },
+      });
+    }
+
+    // Set SSE headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
+    res.flushHeaders();
+
+    // Send retry directive (3 seconds)
+    res.write('retry: 3000\n\n');
+
+    // Send initial status_update event
+    const sendStatusUpdate = (status, txHash, ledger) => {
+      const event = {
+        donationId: donation.id,
+        status,
+        timestamp: new Date().toISOString(),
+      };
+      if (txHash) event.txHash = txHash;
+      if (ledger) event.ledger = ledger;
+      res.write(`event: status_update\ndata: ${JSON.stringify(event)}\n\n`);
+    };
+
+    sendStatusUpdate(donation.status, donation.stellar_tx_id, donation.ledger);
+
+    // If already in terminal state, close immediately
+    if (donation.status === 'confirmed' || donation.status === 'failed') {
+      res.write(`event: stream_closed\ndata: ${JSON.stringify({ reason: 'terminal_state', finalStatus: donation.status })}\n\n`);
+      res.end();
+      return;
+    }
+
+    // Keepalive interval (15 seconds)
+    const keepaliveInterval = setInterval(() => {
+      res.write(': keepalive\n\n');
+    }, 15000);
+
+    // 5-minute timeout
+    const timeoutMs = 5 * 60 * 1000;
+    const timeoutTimer = setTimeout(() => {
+      res.write(`event: stream_closed\ndata: ${JSON.stringify({ reason: 'timeout', finalStatus: donation.status })}\n\n`);
+      res.end();
+    }, timeoutMs);
+
+    // Listen for donation status updates
+    const statusUpdateHandler = (payload) => {
+      if (payload.donationId === donation.id) {
+        sendStatusUpdate(payload.status, payload.txHash, payload.ledger);
+
+        // Close connection on terminal state (confirmed = completed in this system)
+        if (payload.status === 'confirmed' || payload.status === 'failed') {
+          res.write(`event: stream_closed\ndata: ${JSON.stringify({ reason: 'terminal_state', finalStatus: payload.status })}\n\n`);
+          res.end();
+        }
+      }
+    };
+
+    donationEvents.on('donation.submitted', statusUpdateHandler);
+    donationEvents.on('donation.confirmed', statusUpdateHandler);
+    donationEvents.on('donation.failed', statusUpdateHandler);
+
+    // Cleanup on client disconnect
+    req.on('close', () => {
+      clearInterval(keepaliveInterval);
+      clearTimeout(timeoutTimer);
+      donationEvents.off('donation.submitted', statusUpdateHandler);
+      donationEvents.off('donation.confirmed', statusUpdateHandler);
+      donationEvents.off('donation.failed', statusUpdateHandler);
+    });
   } catch (error) {
     next(error);
   }
@@ -437,6 +1330,23 @@ router.get('/:id', checkPermission(PERMISSIONS.DONATIONS_READ), donationIdParamS
     // Mark processing complete
     if (req.markLifecycleStage) {
       req.markLifecycleStage(LIFECYCLE_STAGES.PROCESSED);
+    }
+
+    // ETag and conditional request support (#751)
+    const lastModifiedDate = new Date(transaction.statusUpdatedAt || transaction.timestamp);
+    const etag = `"${transaction.id}-${lastModifiedDate.getTime()}"`;
+    res.setHeader('ETag', etag);
+    res.setHeader('Last-Modified', lastModifiedDate.toUTCString());
+    res.setHeader('Cache-Control', 'private, max-age=0, must-revalidate');
+
+    if (req.headers['if-none-match'] === etag) {
+      return res.status(304).end();
+    }
+    if (req.headers['if-modified-since']) {
+      const ifModifiedSince = new Date(req.headers['if-modified-since']);
+      if (!isNaN(ifModifiedSince.getTime()) && lastModifiedDate <= ifModifiedSince) {
+        return res.status(304).end();
+      }
     }
 
     // HTTP/2 server push + Link header for related resources
@@ -488,36 +1398,33 @@ router.patch('/:id/status', checkPermission(PERMISSIONS.DONATIONS_UPDATE), updat
 }));
 
 /**
- * POST /donations/:id/refund
- * Initiate a refund for a confirmed donation
- * Requires admin or refund permission
+ * POST /donations/:id/refund — #797
+ * Initiate a refund for a completed donation.
+ * Body: { reason, notes, idempotencyKey, recipientSecret }
+ * - 404 if donation not found
+ * - 409 if already refunded (idempotency key match returns 200 with existing record)
+ * - 422 if not in completed/confirmed status or refund window expired
  */
 router.post('/:id/refund', requireApiKey, checkPermission(PERMISSIONS.DONATIONS_UPDATE), donationIdParamSchema, payloadSizeLimiter(ENDPOINT_LIMITS.singleDonation), asyncHandler(async (req, res, next) => {
   try {
     const { id } = req.params;
-    const { reason } = req.body;
-
-    log.debug('DONATION_ROUTE', 'Processing refund request', {
-      requestId: req.id,
-      donationId: id,
-      reason
-    });
+    const { reason, notes, idempotencyKey, recipientSecret } = req.body;
 
     // Validate donation ID
     if (!id || isNaN(parseInt(id, 10))) {
       return res.status(400).json({
         success: false,
-        error: {
-          code: 'INVALID_REQUEST',
-          message: 'Invalid donation ID'
-        }
+        error: { code: 'INVALID_REQUEST', message: 'Invalid donation ID' }
       });
     }
 
-    // Process refund
+    // Process refund — service throws NotFoundError(404), BusinessLogicError(422), DuplicateError(409)
     const refundResult = await donationService.refundDonation(id, {
       reason: reason || null,
-      requestId: req.id
+      notes: notes || null,
+      idempotencyKey: idempotencyKey || null,
+      recipientSecret: recipientSecret || null,
+      requestId: req.id,
     });
 
     // Mark processing complete
@@ -525,17 +1432,28 @@ router.post('/:id/refund', requireApiKey, checkPermission(PERMISSIONS.DONATIONS_
       req.markLifecycleStage(LIFECYCLE_STAGES.PROCESSED);
     }
 
-    res.status(201).json({
+    // Idempotent replay: service signals this was already processed
+    const statusCode = refundResult.alreadyProcessed ? 200 : 201;
+
+    res.status(statusCode).json({
       success: true,
-      data: refundResult
+      data: {
+        refundId: refundResult.refundId,
+        donationId: parseInt(id, 10),
+        originalAmount: refundResult.amount,
+        refundedAmount: refundResult.refundedAmount || refundResult.amount,
+        networkFeeDeducted: refundResult.networkFeeDeducted || 0,
+        stellarTxHash: refundResult.reverseTxId || refundResult.transactionId || null,
+        status: refundResult.status || 'completed',
+        reason: refundResult.reason || reason || null,
+        processedAt: refundResult.refundedAt || new Date().toISOString(),
+      },
     });
   } catch (error) {
     log.error('DONATION_ROUTE', 'Failed to process refund', {
       requestId: req.id,
       error: error.message,
-      stack: error.stack
     });
-
     next(error);
   }
 }));
@@ -825,6 +1743,167 @@ router.get('/:id/certificate/ipfs', checkPermission(PERMISSIONS.DONATIONS_READ),
     return res.json({
       success: true,
       data: { donationId, cid, gateway: `${GATEWAY_URL}/${cid}`, pinned },
+    });
+  } catch (error) {
+    next(error);
+  }
+}));
+
+/**
+ * GET /donations/limits
+ * Return the configured minimum and maximum donation amounts.
+ * Response is cached for 1 hour (Cache-Control: public, max-age=3600).
+ * ETag is derived from the config values so it changes when config changes.
+ */
+router.get('/limits', checkPermission(PERMISSIONS.DONATIONS_READ), (req, res) => {
+  const config = require('../config');
+  const crypto = require('crypto');
+  const { minAmount, maxAmount, maxDailyPerDonor } = config.donations;
+
+  const limitsData = { minAmount, maxAmount, maxDailyPerDonor, currency: 'XLM' };
+  const etag = `"${crypto.createHash('sha256').update(JSON.stringify(limitsData)).digest('hex').slice(0, 32)}"`;
+
+  res.setHeader('Cache-Control', 'public, max-age=3600');
+  res.setHeader('ETag', etag);
+
+  // Conditional GET support
+  const ifNoneMatch = req.headers['if-none-match'];
+  if (ifNoneMatch && (ifNoneMatch === etag || ifNoneMatch === '*')) {
+    return res.status(304).end();
+  }
+
+  return res.json({ success: true, data: limitsData });
+});
+
+/**
+ * GET /donations/stats/by-campaign
+ * Aggregate donation statistics per campaign.
+ * Supports date range filtering, sorting, and pagination.
+ * Results are cached for 60 seconds.
+ */
+router.get('/stats/by-campaign', checkPermission(PERMISSIONS.STATS_READ), asyncHandler(async (req, res, next) => {
+  try {
+    const { from, to, sort = 'totalRaised', order = 'desc', limit = 20, offset = 0 } = req.query;
+    
+    // Validate sort parameter
+    const validSortFields = ['totalRaised', 'donorCount', 'donationCount'];
+    if (!validSortFields.includes(sort)) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_SORT',
+          message: `Invalid sort field. Valid options: ${validSortFields.join(', ')}`
+        }
+      });
+    }
+    
+    // Validate order parameter
+    const validOrders = ['asc', 'desc'];
+    if (!validOrders.includes(order.toLowerCase())) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_ORDER',
+          message: 'Order must be "asc" or "desc"'
+        }
+      });
+    }
+    
+    // Parse and validate limit
+    const parsedLimit = Math.min(parseInt(limit, 10) || 20, 100);
+    const parsedOffset = Math.max(parseInt(offset, 10) || 0, 0);
+    
+    // Build query with optional date filtering
+    let query = `
+      SELECT
+        c.id as campaignId,
+        c.name as campaignName,
+        COALESCE(SUM(t.amount), 0) as totalRaised,
+        COUNT(DISTINCT t.senderId) as donorCount,
+        COUNT(t.id) as donationCount,
+        COALESCE(AVG(t.amount), 0) as averageDonation,
+        c.goal_amount as goalAmount,
+        CASE 
+          WHEN c.goal_amount > 0 THEN ROUND((COALESCE(SUM(t.amount), 0) / c.goal_amount) * 100, 2)
+          ELSE 0
+        END as percentComplete,
+        MIN(t.timestamp) as firstDonationAt,
+        MAX(t.timestamp) as lastDonationAt
+      FROM campaigns c
+      LEFT JOIN transactions t ON c.id = t.campaign_id
+    `;
+    
+    const params = [];
+    const conditions = [];
+    
+    // Add date range filtering
+    if (from) {
+      conditions.push('t.timestamp >= ?');
+      params.push(from);
+    }
+    if (to) {
+      conditions.push('t.timestamp <= ?');
+      params.push(to);
+    }
+    
+    if (conditions.length > 0) {
+      query += ' WHERE ' + conditions.join(' AND ');
+    }
+    
+    query += ` GROUP BY c.id, c.name, c.goal_amount`;
+    query += ` HAVING COUNT(t.id) > 0`; // Exclude campaigns with zero donations
+    
+    // Map sort field to column name
+    const sortColumnMap = {
+      'totalRaised': 'totalRaised',
+      'donorCount': 'donorCount',
+      'donationCount': 'donationCount'
+    };
+    
+    query += ` ORDER BY ${sortColumnMap[sort]} ${order.toUpperCase()}`;
+    query += ` LIMIT ? OFFSET ?`;
+    params.push(parsedLimit, parsedOffset);
+    
+    const data = await Database.query(query, params);
+    
+    // Get total count for pagination
+    let countQuery = `
+      SELECT COUNT(DISTINCT c.id) as total
+      FROM campaigns c
+      LEFT JOIN transactions t ON c.id = t.campaign_id
+    `;
+    
+    const countParams = [];
+    const countConditions = [];
+    
+    if (from) {
+      countConditions.push('t.timestamp >= ?');
+      countParams.push(from);
+    }
+    if (to) {
+      countConditions.push('t.timestamp <= ?');
+      countParams.push(to);
+    }
+    
+    if (countConditions.length > 0) {
+      countQuery += ' WHERE ' + countConditions.join(' AND ');
+    }
+    
+    countQuery += ` GROUP BY c.id HAVING COUNT(t.id) > 0`;
+    
+    const countResult = await Database.query(countQuery, countParams);
+    const total = countResult.length;
+    
+    // Set cache headers
+    res.setHeader('Cache-Control', 'public, max-age=60');
+    
+    res.json({
+      success: true,
+      data,
+      total,
+      limit: parsedLimit,
+      offset: parsedOffset,
+      generatedAt: new Date().toISOString()
     });
   } catch (error) {
     next(error);

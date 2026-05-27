@@ -34,6 +34,7 @@ const featureFlagsAdminRoutes = require('./admin/featureFlags');
 const createFeeBumpRouter = require('./admin/feeBump');
 const dbAdminRoutes = require('./admin/db');
 const adminTracesRoutes = require('./admin/traces');
+const systemInfoRoutes = require('./admin/systemInfo');
 const retentionAdminRoutes = require('./admin/retention');
 const backupAdminRoutes = require('./admin/backup');
 const encryptionAdminRoutes = require('./admin/encryption');
@@ -69,7 +70,7 @@ const { attachLifecycleTracking } = require('../middleware/requestLifecycle');
 const serviceContainer = require('../config/serviceContainer');
 const { payloadSizeLimiter, ENDPOINT_LIMITS } = require('../middleware/payloadSizeLimiter');
 const { createCorsMiddleware } = require('../middleware/cors');
-const { createCspMiddleware, cspReportRouter } = require('../middleware/csp');
+const { createPathBasedCspMiddleware, cspReportRouter } = require('../middleware/csp');
 const { responseFormatterMiddleware } = require('../utils/responseFormatter');
 const trackQuotaUsage = require('../middleware/quotaTracker');
 const asyncHandler = require('../utils/asyncHandler');
@@ -93,6 +94,7 @@ const { metricsMiddleware, registry } = require('../utils/metrics');
 const { attachSubscriptionServer } = require('../graphql');
 const sseManager = require('../services/SseManager');
 const claimableBalancesRoutes = require('./claimableBalances');
+const { requestTimeout, TIMEOUTS } = require('../middleware/requestTimeout');
 
 const app = express();
 
@@ -107,6 +109,7 @@ const stellarService = serviceContainer.getStellarService();
 const reconciliationService = serviceContainer.getTransactionReconciliationService();
 const recurringDonationScheduler = serviceContainer.getRecurringDonationScheduler();
 const networkStatusService = serviceContainer.getNetworkStatusService();
+setNetworkService(networkStatusService);
 const transactionSyncScheduler = serviceContainer.getTransactionSyncScheduler();
 
 // Initialize replay detection cleanup timer (will be started in startServer)
@@ -148,13 +151,9 @@ app.use(attachLifecycleTracking);
 // Attach res.success / res.failure envelope helpers (must be after requestId)
 app.use(responseFormatterMiddleware());
 // Security headers (helmet must be early, before routes)
+// contentSecurityPolicy disabled here - owned by createPathBasedCspMiddleware below
 app.use(helmet({
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'none'"],
-      frameAncestors: ["'none'"],
-    },
-  },
+  contentSecurityPolicy: false,
   frameguard: { action: 'deny' },
   noSniff: true,
   referrerPolicy: { policy: 'no-referrer' },
@@ -163,15 +162,15 @@ app.use(helmet({
     includeSubDomains: true,
     preload: true,
   },
-  xssFilter: false,         // deprecated header — omit for API servers
+  xssFilter: false,         // deprecated header - omit for API servers
   hidePoweredBy: true,
 }));
 
 // CORS (must be before body parsers and route handlers)
 app.use(createCorsMiddleware());
 
-// CSP: per-request nonce + strict directives (after helmet, before routes)
-app.use(createCspMiddleware());
+// CSP: strict for API routes, relaxed for /docs + /api/docs (Swagger UI) — Issue #757
+app.use(createPathBasedCspMiddleware());
 app.use(cspReportRouter);
 
 // Geographic IP blocking (must be before body parsers)
@@ -240,36 +239,44 @@ app.use((req, res, next) => {
   return requestTimeout(GLOBAL_TIMEOUT_MS)(req, res, next);
 });
 
-// Routes
-app.use('/wallets', walletRoutes);
-app.use('/wallets', thresholdsRouter);
-app.use('/', recoveryRoutes);
-app.use('/donations', donationRoutes);
-app.use('/donations', require('./receipt'));
-app.use('/donations/recurring', recurringDonationRoutes);
-app.use('/assets', assetRoutes);
-app.use('/stats', statsRoutes);
-app.use('/stream', streamRoutes);
-app.use('/network', networkRoutes);
-app.use('/webhooks', webhooksRoutes);
-app.use('/campaigns', campaignsRoutes);
-app.use('/encryption', encryptionRoutes);
-app.use('/tiers', tiersRoutes);
-app.use('/offers', offersRoutes);
-app.use('/orderbook/:baseAsset/:counterAsset', require('./orderbook'));
-app.use('/tags', tagsRoutes);
-app.use('/leaderboard', leaderboardRoutes);
-app.use('/federation', federationLookupRoutes);
-app.use('/tools', toolsRoutes);
-app.use('/auth', authRoutes);
-app.use('/docs', docsRoutes);
-app.use('/transactions', transactionRoutes);
-app.use('/', corporateMatchingRoutes);
-app.use('/claimable-balances', claimableBalancesRoutes);
-app.use('/liquidity-pools', require('./liquidity-pools'));
+// ─── Versioned API Router (issue #738) ───────────────────────────────────────
+// All API routes are mounted under /api/v1
+const apiV1 = express.Router();
+
+// Public endpoints — mounted before requireApiKey middleware
+apiV1.use('/fees', feesRoutes);
+
+apiV1.use('/wallets', walletRoutes);
+apiV1.use('/wallets', thresholdsRouter);
+apiV1.use('/', recoveryRoutes);
+apiV1.use('/donations', donationRoutes);
+apiV1.use('/donations', require('./receipt'));
+apiV1.use('/donations/recurring', recurringDonationRoutes);
+apiV1.use('/assets', assetRoutes);
+apiV1.use('/stats', statsRoutes);
+apiV1.use('/stream', streamRoutes);
+apiV1.use('/network', networkRoutes);
+apiV1.use('/webhooks', webhooksRoutes);
+apiV1.use('/campaigns', campaignsRoutes);
+apiV1.use('/encryption', encryptionRoutes);
+apiV1.use('/tiers', tiersRoutes);
+apiV1.use('/offers', offersRoutes);
+apiV1.use('/orderbook/:baseAsset/:counterAsset', require('./orderbook'));
+apiV1.use('/tags', tagsRoutes);
+apiV1.use('/leaderboard', leaderboardRoutes);
+apiV1.use('/federation', federationLookupRoutes);
+apiV1.use('/tools', toolsRoutes);
+apiV1.use('/auth', authRoutes);
+apiV1.use('/docs', docsRoutes);
+apiV1.use('/transactions', transactionRoutes);
+apiV1.use('/', corporateMatchingRoutes);
+apiV1.use('/claimable-balances', claimableBalancesRoutes);
+apiV1.use('/liquidity-pools', require('./liquidity-pools'));
+apiV1.use('/api-keys', apiKeysRoutes);
+apiV1.use('/api-keys', apiKeyUsageRoutes);
 
 // Exchange rates endpoint
-app.get('/exchange-rates', asyncHandler(async (req, res) => {
+apiV1.get('/exchange-rates', asyncHandler(async (req, res) => {
   try {
     const priceOracle = require('../services/PriceOracleService');
     const rates = await priceOracle.getRates();
@@ -291,6 +298,30 @@ app.get('/exchange-rates', asyncHandler(async (req, res) => {
   }
 }));
 
+// Mount versioned router
+app.use('/api/v1', apiV1);
+
+// ─── Deprecation redirects for unversioned paths (issue #738) ────────────────
+// Redirect legacy unversioned paths to /api/v1 with a deprecation warning header.
+// Paths that are intentionally unversioned (/health, /metrics, /admin/*, /.well-known/*)
+// are excluded from redirection.
+const UNVERSIONED_PATHS = [
+  '/wallets', '/donations', '/assets', '/stats', '/stream', '/network',
+  '/webhooks', '/campaigns', '/encryption', '/tiers', '/offers', '/orderbook',
+  '/tags', '/leaderboard', '/federation', '/tools', '/auth', '/docs',
+  '/transactions', '/claimable-balances', '/liquidity-pools', '/exchange-rates',
+];
+
+app.use((req, res, next) => {
+  const matchesLegacy = UNVERSIONED_PATHS.some(p => req.path === p || req.path.startsWith(p + '/'));
+  if (!matchesLegacy) return next();
+
+  res.set('Deprecation', 'true');
+  res.set('Link', `</api/v1${req.path}>; rel="successor-version"`);
+  res.set('Sunset', 'Sat, 01 Jan 2027 00:00:00 GMT');
+  return res.redirect(308, `/api/v1${req.url}`);
+});
+
 // SEP-0010 Stellar TOML discovery endpoint
 app.get('/.well-known/stellar.toml', (req, res) => {
   const host = req.get('host') || 'localhost';
@@ -309,28 +340,31 @@ app.get('/.well-known/stellar.toml', (req, res) => {
   res.type('text/plain').send(tomlContents.join('\n'));
 });
 
-// ─── OpenAPI / Swagger UI (issue #634) ───────────────────────────────────────
+// ─── OpenAPI / Swagger UI (issue #634, #740) ─────────────────────────────────
 try {
   const { spec, swaggerUiMiddleware, swaggerUiSetup } = require('../config/openapi');
   app.use('/api/docs', swaggerUiMiddleware, swaggerUiSetup);
   app.get('/api/openapi.json', (req, res) => res.json(spec));
+  // #740: also serve at /docs in development mode
+  if (process.env.NODE_ENV !== 'production') {
+    app.use('/docs', swaggerUiMiddleware, swaggerUiSetup);
+    app.get('/openapi.json', (req, res) => res.json(spec));
+  }
 } catch (_err) {
   // swagger-jsdoc / swagger-ui-express not installed — skip silently
 }
 
 // Health check endpoint
-// Health check endpoints
-app.get('/health', asyncHandler(async (req, res) => {
+// Health check endpoints — available at both /health (unversioned) and /api/v1/health (versioned)
+const healthHandler = asyncHandler(async (req, res) => {
   try {
-    const health = await HealthCheckService.getFullHealth(stellarService, networkStatusService);
+    const health = await HealthCheckService.getFullHealth(stellarService, networkStatusService, recurringDonationScheduler);
     const stellarConfig = require('../config/stellar');
     health.stellarEnvironment = stellarConfig.environment || 'testnet';
     health.stellarNetwork = stellarConfig.network || 'testnet';
-    health.clientIp = req.ip;
-    health.protocol = req.protocol;
     health.requestId = req.id;
     health.transactionSync = transactionSyncScheduler.getSyncStatus();
-    
+
     const httpStatus = health.status === 'healthy' ? 200 : 503;
     return res.status(httpStatus).json(health);
   } catch (err) {
@@ -341,7 +375,11 @@ app.get('/health', asyncHandler(async (req, res) => {
       error: { code: 'HEALTH_CHECK_ERROR', message: 'Health check failed' }
     });
   }
-}));
+});
+
+app.get('/api/v1/health', healthHandler);
+
+app.get('/health', healthHandler);
 
 // Liveness probe — returns 200 as long as the process is running
 app.get('/health/live', (req, res) => {
@@ -351,7 +389,7 @@ app.get('/health/live', (req, res) => {
 // Readiness probe — returns 200 only when all dependencies are healthy
 app.get('/health/ready', asyncHandler(async (req, res) => {
   try {
-    const readiness = await HealthCheckService.getReadiness(stellarService, networkStatusService);
+    const readiness = await HealthCheckService.getReadiness(stellarService, networkStatusService, recurringDonationScheduler);
     const httpStatus = readiness.ready ? 200 : 503;
     return res.status(httpStatus).json(readiness);
   } catch (err) {
@@ -416,24 +454,68 @@ app.get('/suspicious-patterns', require('../middleware/rbac').requireAdmin(), (r
   });
 });
 
+// Feature flags admin UI + API (issue #807)
+app.use('/admin/feature-flags', requireApiKey, featureFlagsAdminRoutes);
+
+// Circuit breaker admin endpoints (issue #736)
+app.use('/admin/circuit-breaker', requireApiKey, require('./admin/circuitBreaker'));
+
+// System info endpoint (issue #803)
+app.use('/admin/system/info', requireApiKey, systemInfoRoutes);
+
+// Database monitoring admin endpoints
+app.use('/admin/db', requireApiKey, dbAdminRoutes);
+
 // Transaction inspection (admin only)
 app.use('/admin/inspect/xdr', require('../middleware/rbac').requireAdmin(), adminInspectRoutes);
 
 // Audit log export (Issue #604) - async jobs with signed download URLs
 app.use('/admin/audit-logs/export', require('./admin/auditLogExport'));
 
-// Audit logs endpoint (admin only)
+// Audit logs endpoint (admin only) — #796: mandatory pagination, default 50, max 500
+const AUDIT_LOG_DEFAULT_LIMIT = 50;
+const AUDIT_LOG_MAX_LIMIT = 500;
+
 app.get('/admin/audit-logs', require('../middleware/rbac').requireAdmin(), asyncHandler(async (req, res, next) => {
   try {
-    const pagination = parseCursorPaginationQuery(req.query);
+    // Parse and enforce limit bounds (default 50, max 500)
+    let limit = AUDIT_LOG_DEFAULT_LIMIT;
+    if (req.query.limit !== undefined) {
+      const parsed = parseInt(req.query.limit, 10);
+      if (isNaN(parsed) || parsed < 1) {
+        return res.status(400).json({ success: false, error: { code: 'INVALID_LIMIT', message: 'limit must be a positive integer' } });
+      }
+      if (parsed > AUDIT_LOG_MAX_LIMIT) {
+        return res.status(400).json({ success: false, error: { code: 'LIMIT_TOO_LARGE', message: `limit cannot exceed ${AUDIT_LOG_MAX_LIMIT}` } });
+      }
+      limit = parsed;
+    }
+
+    // Allowlist validation — reject unknown enum values before they reach the DB layer
+    const VALID_CATEGORIES = new Set(Object.values(AuditLogService.CATEGORY));
+    const VALID_SEVERITIES = new Set(Object.values(AuditLogService.SEVERITY));
+
+    if (req.query.category && !VALID_CATEGORIES.has(req.query.category)) {
+      return res.status(400).json({ success: false, error: 'Invalid category value' });
+    }
+    if (req.query.severity && !VALID_SEVERITIES.has(req.query.severity)) {
+      return res.status(400).json({ success: false, error: 'Invalid severity value' });
+    }
+
+    // Parse cursor using existing utility but override limit
+    const pagination = parseCursorPaginationQuery({ ...req.query, limit: String(limit) });
+    pagination.limit = limit; // ensure our validated limit is used
+
     const filters = {
       category: req.query.category,
       action: req.query.action,
       severity: req.query.severity,
-      userId: req.query.userId,
+      // actorId maps to userId in the schema
+      userId: req.query.actorId || req.query.userId,
       requestId: req.query.requestId,
-      startDate: req.query.startDate,
-      endDate: req.query.endDate,
+      // from/to map to startDate/endDate
+      startDate: req.query.from || req.query.startDate,
+      endDate: req.query.to || req.query.endDate,
     };
 
     const result = await AuditLogService.queryPaginated(filters, pagination);
@@ -443,7 +525,13 @@ app.get('/admin/audit-logs', require('../middleware/rbac').requireAdmin(), async
       success: true,
       data: result.data,
       count: result.data.length,
-      meta: result.meta
+      pagination: {
+        limit,
+        cursor: result.meta.next_cursor || null,
+        hasMore: result.meta.next_cursor !== null,
+        total: result.totalCount,
+      },
+      meta: result.meta,
     });
   } catch (error) {
     next(error);
@@ -609,7 +697,7 @@ async function startServer() {
           await loadFlagsFromEnv(process.env.FEATURE_FLAGS);
         }
 
-        await WebhookService.initTable();
+        await WebhookService.WebhookService.initTable();
         await validateRBAC();
 
         // Only start background workers and jobs if not in test environment
@@ -633,7 +721,7 @@ async function startServer() {
           log.warn('NETWORK_STATUS', 'Network status degraded', { status });
         });
         try {
-          await networkStatusService.initialize();
+          networkStatusService.start();
         } catch (err) {
           log.error('APP', 'Failed to initialize NetworkStatusService', { error: err.message });
         }
@@ -718,12 +806,13 @@ async function startServer() {
           log.error("SHUTDOWN", "Error flushing webhooks", { error: err.message });
         }
 
-        // Stop recurring donation scheduler and wait for running job
+        // Stop recurring donation scheduler and wait for in-progress executions
         try {
-          await recurringDonationScheduler.stopGracefully
-            ? recurringDonationScheduler.stopGracefully()
-            : recurringDonationScheduler.stop();
-          log.info("SHUTDOWN", "Scheduler stopped");
+          const schedulerResult = await recurringDonationScheduler.stopGracefully(timeoutMs);
+          log.info("SHUTDOWN", "Scheduler stopped", {
+            waited: schedulerResult?.waited ?? 0,
+            interrupted: schedulerResult?.interrupted ?? 0,
+          });
         } catch (err) {
           log.error("SHUTDOWN", "Error stopping scheduler", { error: err.message });
         }
@@ -742,7 +831,7 @@ async function startServer() {
         }
         
         try {
-          await networkStatusService.shutdown();
+          networkStatusService.stop();
         } catch (err) {
           log.error("SHUTDOWN", "Error shutting down NetworkStatusService", { error: err.message });
         }
@@ -750,6 +839,14 @@ async function startServer() {
         if (replayCleanupTimer) {
           clearInterval(replayCleanupTimer);
           log.info("SHUTDOWN", "Replay detection cleanup timer stopped");
+        }
+
+        // Checkpoint SQLite WAL before closing
+        try {
+          await Database.run('PRAGMA wal_checkpoint(TRUNCATE)');
+          log.info("SHUTDOWN", "SQLite WAL checkpoint completed");
+        } catch (err) {
+          log.warn("SHUTDOWN", "Error checkpointing WAL", { error: err.message });
         }
 
         await Database.close();

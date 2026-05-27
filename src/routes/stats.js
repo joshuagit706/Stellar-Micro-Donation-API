@@ -77,46 +77,52 @@ const AuditLogService = require('../services/AuditLogService');
 const asyncHandler = require('../utils/asyncHandler');
 const { cacheMiddleware } = require('../middleware/caching');
 const Cache = require('../utils/cache');
+const { isValidStellarPublicKey } = require('../utils/validators');
+const { statsRateLimiter } = require('../middleware/rateLimiter');
 
 // Stats cache TTL in milliseconds — configurable via STATS_CACHE_TTL_SECONDS env var (default: 60s)
 const STATS_CACHE_TTL_MS = parseInt(process.env.STATS_CACHE_TTL_SECONDS || '60', 10) * 1000;
 
 /**
- * Wrap a stats handler with server-side in-memory caching.
- * Sets X-Cache-Age header and uses Cache.get/set with the given prefix + cache key.
- *
- * @param {string} prefix - Cache key prefix (e.g. 'stats:daily')
- * @param {Function} dataFn - Function that returns the response body object
- * @returns {import('express').RequestHandler}
+ * Global stats caching middleware.
+ * Caches responses per API key, endpoint, and query parameters.
  */
-function withStatsCache(prefix, dataFn) {
-  return (req, res, next) => {
-    try {
-      const cacheKey = `${prefix}:${JSON.stringify(req.query)}`;
-      const cached = Cache.get(cacheKey);
+function globalStatsCache(req, res, next) {
+  if (req.method !== 'GET') {
+    return next();
+  }
 
-      if (cached) {
-        const ageSeconds = Math.floor((Date.now() - cached.cachedAt) / 1000);
-        res.setHeader('X-Cache-Age', String(ageSeconds));
-        return res.json(cached.body);
-      }
+  try {
+    const apiKeyId = (req.apiKey && req.apiKey.id) ? req.apiKey.id : req.ip;
+    const endpoint = req.path;
+    const cacheKey = `stats_cache:${apiKeyId}:${endpoint}:${JSON.stringify(req.query)}`;
+    const cached = Cache.get(cacheKey);
 
-      // Intercept res.json to store result in cache
-      const originalJson = res.json.bind(res);
-      res.json = function (body) {
-        if (res.statusCode >= 200 && res.statusCode < 300) {
-          Cache.set(cacheKey, { body, cachedAt: Date.now() }, STATS_CACHE_TTL_MS);
-          res.setHeader('X-Cache-Age', '0');
-        }
-        return originalJson(body);
-      };
-
-      dataFn(req, res, next);
-    } catch (error) {
-      next(error);
+    if (cached) {
+      const ageSeconds = Math.floor((Date.now() - cached.cachedAt) / 1000);
+      res.setHeader('X-Cache-Age', String(ageSeconds));
+      return res.json(cached.body);
     }
-  };
+
+    // Intercept res.json to store result in cache
+    const originalJson = res.json.bind(res);
+    res.json = function (body) {
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        Cache.set(cacheKey, { body, cachedAt: Date.now() }, STATS_CACHE_TTL_MS);
+        res.setHeader('X-Cache-Age', '0');
+      }
+      return originalJson(body);
+    };
+
+    next();
+  } catch (error) {
+    next(error);
+  }
 }
+
+// Apply globally to all stats routes
+router.use(statsRateLimiter);
+router.use(globalStatsCache);
 
 /** Fire-and-forget audit log for stats data access */
 function auditStatsAccess(req, res, next) {
@@ -143,6 +149,17 @@ const strictDateRangeQuerySchema = validateSchema({
   },
 });
 
+const optionalDateRangeQuerySchema = validateSchema({
+  query: {
+    fields: {
+      startDate: { type: 'dateString', required: false },
+      endDate: { type: 'dateString', required: false },
+      from: { type: 'dateString', required: false },
+      to: { type: 'dateString', required: false },
+    },
+  },
+});
+
 const walletAnalyticsSchema = validateSchema({
   params: {
     fields: {
@@ -151,6 +168,7 @@ const walletAnalyticsSchema = validateSchema({
         required: true,
         trim: true,
         minLength: 1,
+        validate: (value) => isValidStellarPublicKey(value) || 'Invalid Stellar public key format',
       },
     },
   },
@@ -202,7 +220,7 @@ router.get('/tags', checkPermission(PERMISSIONS.STATS_READ), auditStatsAccess, s
  * Get daily aggregated donation volume
  * Query params: startDate, endDate (ISO format)
  */
-router.get('/daily', checkPermission(PERMISSIONS.STATS_READ), auditStatsAccess, cacheMiddleware('stats', 'private'), strictDateRangeQuerySchema, validateDateRange, withStatsCache('stats:daily', (req, res, next) => {
+router.get('/daily', checkPermission(PERMISSIONS.STATS_READ), auditStatsAccess, cacheMiddleware('stats', 'private'), strictDateRangeQuerySchema, validateDateRange, (req, res, next) => {
   try {
     const { startDate, endDate } = req.query;
     const start = new Date(startDate);
@@ -237,7 +255,7 @@ router.get('/daily', checkPermission(PERMISSIONS.STATS_READ), auditStatsAccess, 
   } catch (error) {
     next(error);
   }
-}));
+});
 
 /**
  * GET /stats/weekly
@@ -251,7 +269,7 @@ router.get(
   cacheMiddleware('stats', 'private'),
   strictDateRangeQuerySchema,
   validateDateRange,
-  withStatsCache('stats:weekly', (req, res, next) => {
+  (req, res, next) => {
     try {
       const { startDate, endDate } = req.query;
       const start = new Date(startDate);
@@ -274,26 +292,44 @@ router.get(
     } catch (error) {
       next(error);
     }
-  }),
+  }
 );
 
 /**
  * GET /stats/summary
  * Get overall summary statistics
- * Query params: startDate, endDate (ISO format)
+ * Query params: startDate/endDate or from/to (all optional, ISO format)
  */
 router.get(
   "/summary",
   checkPermission(PERMISSIONS.STATS_READ),
   auditStatsAccess,
   cacheMiddleware('stats', 'private'),
-  strictDateRangeQuerySchema,
-  validateDateRange,
-  withStatsCache('stats:summary', (req, res, next) => {
+  optionalDateRangeQuerySchema,
+  (req, res, next) => {
     try {
-      const { startDate, endDate } = req.query;
-      const start = new Date(startDate);
-      const end = new Date(endDate);
+      const fromParam = req.query.from || req.query.startDate;
+      const toParam = req.query.to || req.query.endDate;
+
+      let start, end;
+
+      if (fromParam) {
+        start = new Date(fromParam);
+        if (isNaN(start.getTime())) {
+          return res.status(400).json({ success: false, error: 'Invalid date format for startDate/from' });
+        }
+      } else {
+        start = new Date(0);
+      }
+
+      if (toParam) {
+        end = new Date(toParam);
+        if (isNaN(end.getTime())) {
+          return res.status(400).json({ success: false, error: 'Invalid date format for endDate/to' });
+        }
+      } else {
+        end = new Date();
+      }
 
       const stats = StatsService.getSummaryStats(start, end);
 
@@ -304,7 +340,7 @@ router.get(
     } catch (error) {
       next(error);
     }
-  }),
+  }
 );
 
 /**
@@ -409,28 +445,15 @@ router.get('/analytics-fees', checkPermission(PERMISSIONS.STATS_READ), auditStat
  * Get donation analytics for a specific wallet
  * Query params: startDate, endDate (optional, ISO format)
  */
-router.get('/wallet/:walletAddress/analytics', checkPermission(PERMISSIONS.STATS_READ), requireTier('pro'), walletAnalyticsSchema, (req, res, next) => {
+router.get('/wallet/:walletAddress/analytics', checkPermission(PERMISSIONS.STATS_READ), requireTier('pro'), walletAnalyticsSchema, asyncHandler(async (req, res, next) => {
   try {
     const { walletAddress } = req.params;
     const { startDate, endDate } = req.query;
 
-    if (!walletAddress) {
-      return res.status(400).json({
-        error: 'Missing required parameter: walletAddress'
-      });
-    }
-
     let start = null;
     let end = null;
 
-    // If date filtering is requested, validate dates
     if (startDate || endDate) {
-      if (!startDate || !endDate) {
-        return res.status(400).json({
-          error: 'Both startDate and endDate are required for date filtering'
-        });
-      }
-
       start = new Date(startDate);
       end = new Date(endDate);
 
@@ -449,31 +472,19 @@ router.get('/wallet/:walletAddress/analytics', checkPermission(PERMISSIONS.STATS
 
     const analytics = StatsService.getWalletAnalytics(walletAddress, start, end);
 
+    if (analytics.donationCount === 0) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'NOT_FOUND',
+          message: 'Wallet analytics not found for the provided Stellar public key'
+        }
+      });
+    }
+
     res.json({
       success: true,
       data: analytics
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-router.get('/wallet/:walletAddress/analytics', checkPermission(PERMISSIONS.STATS_READ), walletAnalyticsSchema, asyncHandler(async (req, res, next) => {
-  try {
-    const { walletAddress } = req.params;
-
-    // Trigger the new aggregation logic
-    const liveStats = await StatsService.aggregateFromNetwork(walletAddress);
-
-    // Combine with your existing local transaction analytics
-    const localAnalytics = StatsService.getWalletAnalytics(walletAddress);
-
-    res.json({
-      success: true,
-      data: {
-        blockchain: liveStats,
-        local: localAnalytics
-      }
     });
   } catch (error) {
     next(error);
@@ -640,6 +651,7 @@ router.get('/anonymous-breakdown', checkPermission(PERMISSIONS.STATS_READ), (req
  */
 router.post('/cache/invalidate', checkPermission(PERMISSIONS.STATS_ADMIN), (req, res) => {
   Cache.clearPrefix('stats:');
+  Cache.clearPrefix('stats_cache:');
   Cache.clearPrefix('dashboard:');
   res.json({ success: true, message: 'Stats cache invalidated' });
 });

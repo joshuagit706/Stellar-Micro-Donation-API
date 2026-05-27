@@ -13,11 +13,46 @@ const express = require('express');
 const router = express.Router();
 const { checkPermission, requireAdmin } = require('../middleware/rbac');
 const { PERMISSIONS } = require('../utils/permissions');
+const { NotFoundError, ValidationError, ERROR_CODES } = require('../utils/errors');
 const LimitService = require('../services/LimitService');
 const Database = require('../utils/database');
 const asyncHandler = require('../utils/asyncHandler');
 const { payloadSizeLimiter, ENDPOINT_LIMITS } = require('../middleware/payloadSizeLimiter');
 const { buildErrorResponse } = require('../utils/validationErrorFormatter');
+const { validateSchema } = require('../middleware/schemaValidation');
+const { cacheMiddleware } = require('../middleware/caching');
+const { validateDataEntry } = require('../middleware/validateDataEntry');
+const { toWalletResponse } = require('../utils/responseSanitizer');
+
+const requireAuth = requireAdmin;
+const requirePermission = (perm) => checkPermission(perm);
+
+const walletIdSchema = validateSchema({
+  params: {
+    fields: {
+      id: { type: 'string', required: true, trim: true, minLength: 1 }
+    }
+  }
+});
+
+const walletPublicKeySchema = validateSchema({
+  params: {
+    fields: {
+      publicKey: { type: 'string', required: true, trim: true, minLength: 1 }
+    }
+  }
+});
+
+const walletCreateSchema = validateSchema({
+  body: {
+    fields: {
+      address: { type: 'string', required: true, trim: true, minLength: 1 },
+      label: { type: 'string', required: false, nullable: true },
+      ownerName: { type: 'string', required: false, nullable: true },
+      sponsored: { type: 'boolean', required: false, nullable: true }
+    }
+  }
+});
 
 // Inflation destination schema for PATCH
 const inflationDestinationSchema = {
@@ -245,6 +280,13 @@ router.post('/', payloadSizeLimiter(ENDPOINT_LIMITS.wallet), checkPermission(PER
       );
     }
 
+    // Validate Stellar public key format using the Stellar SDK
+    const StellarSdk = require('stellar-sdk');
+    if (!StellarSdk.StrKey.isValidEd25519PublicKey(address)) {
+      const { formatError } = require('../utils/errors');
+      return res.status(400).json(formatError('INVALID_PUBLIC_KEY', 'Invalid Stellar public key format', req.id));
+    }
+
     // Create wallet metadata
     const wallet = await walletService.createWallet({
       address,
@@ -267,7 +309,7 @@ router.post('/', payloadSizeLimiter(ENDPOINT_LIMITS.wallet), checkPermission(PER
 
     res.status(201).json({
       success: true,
-      data: wallet
+      data: toWalletResponse(wallet)
     });
   } catch (error) {
     next(error);
@@ -276,19 +318,38 @@ router.post('/', payloadSizeLimiter(ENDPOINT_LIMITS.wallet), checkPermission(PER
 
 /**
  * GET /wallets
- * Get all wallets
+ * List wallets with cursor-based pagination.
+ * Query params:
+ *   - limit: page size (default 20, max 100)
+ *   - cursor: opaque pagination cursor
+ *   - direction: 'next' | 'prev' (default 'next')
  */
 router.get('/', checkPermission(PERMISSIONS.WALLETS_READ), cacheMiddleware('wallet', 'private'), (req, res, next) => {
   try {
+    // #798: validate ?sort param
+    const VALID_SORT = ['id:asc', 'id:desc', 'createdAt:asc', 'createdAt:desc', 'publicKey:asc', 'publicKey:desc'];
+    const sort = req.query.sort || 'id:asc';
+    if (!VALID_SORT.includes(sort)) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'INVALID_SORT',
+          message: `Invalid sort value. Valid options: ${VALID_SORT.join(', ')}`,
+        },
+      });
+    }
+
     const pagination = parseCursorPaginationQuery(req.query);
-    const result = walletService.getPaginatedWallets(pagination);
+    const result = walletService.getPaginatedWallets(pagination, sort);
 
     res.setHeader('X-Total-Count', String(result.totalCount));
 
     res.json({
       success: true,
-      data: result.data,
+      data: result.data.map(toWalletResponse),
       count: result.data.length,
+      total: result.totalCount,
+      nextCursor: result.meta.next_cursor,
       meta: result.meta
     });
   } catch (error) {
@@ -303,15 +364,53 @@ router.get('/', checkPermission(PERMISSIONS.WALLETS_READ), cacheMiddleware('wall
 router.get('/:id/balance', checkPermission(PERMISSIONS.WALLETS_READ), walletIdSchema, asyncHandler(async (req, res, next) => {
   try {
     const forceRefresh = req.query.refresh === 'true';
+    const wallet = await walletService.getWalletById(req.params.id);
+    
+    if (!wallet) {
+      throw new NotFoundError('Wallet not found', ERROR_CODES.WALLET_NOT_FOUND);
+    }
+    
+    const address = wallet.address || wallet.publicKey;
+    const stellarSvc = getStellarService();
+
+    res.setHeader('Cache-Control', 'max-age=10');
+
+    // Try to get all asset balances if available
+    if (stellarSvc && typeof stellarSvc.getAccountBalances === 'function') {
+      try {
+        const balances = await stellarSvc.getAccountBalances(address);
+        const nativeBalance = balances.find(b => b.asset_type === 'native');
+        const xlmBalance = nativeBalance ? parseFloat(nativeBalance.balance) : 0;
+        const subentryCount = balances.filter(b => b.asset_type !== 'native').length;
+        const minimumReserve = 1.0 + subentryCount * 0.5;
+
+        return res.json({
+          success: true,
+          data: {
+            balances: balances.map(b => ({
+              asset: b.asset_type === 'native' ? 'XLM' : `${b.asset_code}:${b.asset_issuer}`,
+              balance: b.balance,
+              assetType: b.asset_type,
+            })),
+            xlmBalance: nativeBalance ? nativeBalance.balance : '0',
+            minimumReserve: minimumReserve.toFixed(7),
+          }
+        });
+      } catch (_) {
+        // fall through to getBalance
+      }
+    }
+
     const result = await walletService.getBalance(req.params.id, forceRefresh);
-    
+
     res.setHeader('X-Cache', result.cached ? 'HIT' : 'MISS');
-    
+
     res.json({
       success: true,
       data: {
         balance: result.balance,
-        asset: result.asset
+        asset: result.asset,
+        minimumReserve: '1.0000000',
       }
     });
   } catch (error) {
@@ -332,9 +431,27 @@ router.get('/:id', checkPermission(PERMISSIONS.WALLETS_READ), walletIdSchema, ca
     if (!wallet) {
       return res.status(404).json({ success: false, error: 'Wallet not found' });
     }
+
+    // ETag and conditional request support (#751)
+    const lastModifiedDate = new Date(wallet.updatedAt || wallet.createdAt);
+    const etag = `"${wallet.id}-${lastModifiedDate.getTime()}"`;
+    res.setHeader('ETag', etag);
+    res.setHeader('Last-Modified', lastModifiedDate.toUTCString());
+    res.setHeader('Cache-Control', 'private, max-age=0, must-revalidate');
+
+    if (req.headers['if-none-match'] === etag) {
+      return res.status(304).end();
+    }
+    if (req.headers['if-modified-since']) {
+      const ifModifiedSince = new Date(req.headers['if-modified-since']);
+      if (!isNaN(ifModifiedSince.getTime()) && lastModifiedDate <= ifModifiedSince) {
+        return res.status(304).end();
+      }
+    }
+
     const stellarSvc = getStellarService();
     const homeDomain = await stellarSvc.getHomeDomain(wallet.address || wallet.publicKey).catch(() => null);
-    res.json({ success: true, data: { ...wallet, homeDomain: homeDomain || null } });
+    res.json({ success: true, data: toWalletResponse({ ...wallet, homeDomain: homeDomain || null }) });
   } catch (error) {
     next(error);
   }
@@ -342,10 +459,15 @@ router.get('/:id', checkPermission(PERMISSIONS.WALLETS_READ), walletIdSchema, ca
 
 /**
  * PATCH /wallets/:id
- * Update wallet metadata
+ * Update wallet metadata (label, ownerName only — publicKey is immutable)
  */
-router.patch('/:id', checkPermission(PERMISSIONS.WALLETS_UPDATE), walletUpdateSchema, payloadSizeLimiter(ENDPOINT_LIMITS.wallet), asyncHandler(async (req, res, next) => {
+router.patch('/:id', checkPermission(PERMISSIONS.WALLETS_UPDATE), payloadSizeLimiter(ENDPOINT_LIMITS.wallet), asyncHandler(async (req, res, next) => {
   try {
+    // publicKey is immutable — changing it would break all FK relationships
+    if (req.body.publicKey !== undefined) {
+      return res.status(400).json({ success: false, error: 'Public key cannot be changed' });
+    }
+
     const { label, ownerName } = req.body;
 
     if (!label && !ownerName) {
@@ -368,7 +490,7 @@ router.patch('/:id', checkPermission(PERMISSIONS.WALLETS_UPDATE), walletUpdateSc
       details: { walletId: req.params.id, updates: { label, ownerName } }
     });
 
-    res.json({ success: true, data: wallet });
+    res.json({ success: true, data: toWalletResponse(wallet) });
   } catch (error) {
     next(error);
   }
@@ -551,31 +673,39 @@ router.post('/:id/home-domain/verify', checkPermission(PERMISSIONS.WALLETS_READ)
 
 /**
  * GET /wallets/:publicKey/transactions
- * Get all transactions (sent and received) for a wallet
+ * Get all transactions (sent and received) for a wallet with pagination
+ * Query params:
+ *   - limit: number of results per page (default 20, max 100)
+ *   - cursor: pagination cursor (transaction ID to start after)
  */
 router.get('/:publicKey/transactions', checkPermission(PERMISSIONS.WALLETS_READ), walletPublicKeySchema, asyncHandler(async (req, res, next) => {
   try {
     const { publicKey } = req.params;
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
+    const cursor = req.query.cursor ? parseInt(req.query.cursor, 10) : null;
 
     // First, check if user exists with this publicKey
     const user = await Database.get(
-      'SELECT id, publicKey, createdAt FROM users WHERE publicKey = ?',
+      'SELECT id, publicKey, createdAt FROM users WHERE publicKey = ? AND deleted_at IS NULL',
       [publicKey]
     );
 
     if (!user) {
-      // Return empty array if wallet doesn't exist (as per acceptance criteria)
-      return res.json({
-        success: true,
-        data: [],
-        count: 0,
-        message: 'No user found with this public key'
-      });
+      // Return 404 if wallet doesn't exist or is soft-deleted
+      return res.status(404).json({ error: 'Wallet not found' });
     }
 
-    // Get all transactions where user is sender or receiver
-    const transactions = await Database.query(
-      `SELECT
+    // Get total count
+    const countResult = await Database.get(
+      `SELECT COUNT(*) as total
+      FROM transactions t
+      WHERE t.senderId = ? OR t.receiverId = ?`,
+      [user.id, user.id]
+    );
+    const total = countResult.total;
+
+    // Build query with cursor-based pagination
+    let query = `SELECT
         t.id,
         t.senderId,
         t.receiverId,
@@ -587,13 +717,23 @@ router.get('/:publicKey/transactions', checkPermission(PERMISSIONS.WALLETS_READ)
       FROM transactions t
       LEFT JOIN users sender ON t.senderId = sender.id
       LEFT JOIN users receiver ON t.receiverId = receiver.id
-      WHERE t.senderId = ? OR t.receiverId = ?
-      ORDER BY t.timestamp DESC`,
-      [user.id, user.id]
-    );
+      WHERE (t.senderId = ? OR t.receiverId = ?)`;
+    
+    const params = [user.id, user.id];
+
+    // Add cursor condition if provided
+    if (cursor) {
+      query += ` AND t.id > ?`;
+      params.push(cursor);
+    }
+
+    query += ` ORDER BY t.id ASC LIMIT ?`;
+    params.push(limit);
+
+    // Get transactions
+    const transactions = await Database.query(query, params);
 
     // Format the response
-    // eslint-disable-next-line no-unused-vars
     const formattedTransactions = transactions.map(tx => ({
       id: tx.id,
       sender: tx.senderPublicKey,
@@ -603,13 +743,20 @@ router.get('/:publicKey/transactions', checkPermission(PERMISSIONS.WALLETS_READ)
       timestamp: tx.timestamp
     }));
 
+    // Calculate next cursor
+    const nextCursor = transactions.length === limit && transactions.length > 0
+      ? transactions[transactions.length - 1].id
+      : null;
+
     res.json({
       success: true,
-      data: transactions,
-      count: transactions.length,
       data: formattedTransactions,
       count: formattedTransactions.length,
-      count: formattedTransactions.length
+      total,
+      pagination: {
+        limit,
+        nextCursor
+      }
     });
   } catch (error) {
     next(error);
@@ -814,13 +961,13 @@ router.delete('/:id', checkPermission(PERMISSIONS.WALLETS_DELETE), walletIdSchem
  */
 router.get('/admin/deleted', requireAdmin(), asyncHandler(async (req, res, next) => {
   try {
-    const deletedWallets = await Database.query('SELECT * FROM users WHERE deleted_at IS NULL');
+    const deletedWallets = await Database.query('SELECT * FROM users WHERE deleted_at IS NOT NULL');
     const deletedTransactions = await Database.query('SELECT * FROM transactions WHERE deleted_at IS NOT NULL');
 
     res.json({
       success: true,
       data: {
-        wallets: deletedWallets,
+        wallets: deletedWallets.map(toWalletResponse),
         transactions: deletedTransactions
       }
     });
@@ -829,43 +976,7 @@ router.get('/admin/deleted', requireAdmin(), asyncHandler(async (req, res, next)
   }
 }));
 
-/**
- * UPDATED: GET /wallets/:publicKey/transactions
- * Now filters out soft-deleted transactions
- */
-router.get('/:publicKey/transactions', checkPermission(PERMISSIONS.WALLETS_READ), walletPublicKeySchema, asyncHandler(async (req, res, next) => {
-  try {
-    const { publicKey } = req.params;
 
-    const user = await Database.get(
-      'SELECT id FROM users WHERE publicKey = ? AND deleted_at IS NULL',
-      [publicKey]
-    );
-
-    if (!user) {
-      return res.json({ success: true, data: [], count: 0, message: 'No active user found' });
-    }
-
-    // Added "t.deleted_at IS NULL" to the WHERE clause
-    const transactions = await Database.query(
-      `SELECT t.*, sender.publicKey as senderPublicKey, receiver.publicKey as receiverPublicKey
-       FROM transactions t
-       LEFT JOIN users sender ON t.senderId = sender.id
-       LEFT JOIN users receiver ON t.receiverId = receiver.id
-       WHERE (t.senderId = ? OR t.receiverId = ?) AND t.deleted_at IS NULL
-       ORDER BY t.timestamp DESC`,
-      [user.id, user.id]
-    );
-
-    res.json({
-      success: true,
-      data: transactions,
-      count: transactions.length
-    });
-  } catch (error) {
-    next(error);
-  }
-}));
 
 /**
  * POST /wallets/:id/data
@@ -1506,5 +1617,86 @@ router.post(
     }
   })
 );
+
+/**
+ * POST /wallets/:id/fund
+ * Fund a wallet via Stellar Friendbot (testnet only).
+ * Rate limited to 5 requests per minute per API key.
+ */
+const { friendbotRateLimiter } = require('../middleware/rateLimiter');
+const requireApiKey = require('../middleware/apiKey');
+
+router.post('/:id/fund', requireApiKey, checkPermission(PERMISSIONS.WALLETS_UPDATE), walletIdSchema, friendbotRateLimiter, asyncHandler(async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const force = req.query.force === 'true';
+
+    // Look up wallet
+    const wallet = await Database.get(
+      'SELECT id, publicKey FROM users WHERE id = ?',
+      [id]
+    );
+    if (!wallet) {
+      return res.status(404).json({ success: false, error: 'Wallet not found' });
+    }
+
+    const address = wallet.publicKey || wallet.address;
+    const stellarSvc = getStellarService();
+
+    // Check network — Friendbot only works on testnet
+    const network = stellarSvc.getNetwork ? stellarSvc.getNetwork() : 'testnet';
+    if (network === 'mainnet' || network === 'public') {
+      return res.status(400).json({
+        success: false,
+        error: 'Friendbot funding is only available on testnet',
+        network: 'mainnet',
+        hint: 'Fund mainnet wallets by receiving XLM from an existing funded account',
+      });
+    }
+
+    // Unless force=true, check if already funded
+    if (!force) {
+      try {
+        const fundedStatus = await stellarSvc.isAccountFunded(address);
+        if (fundedStatus && fundedStatus.funded) {
+          return res.status(409).json({
+            success: false,
+            error: 'Wallet already has a funded account on the Stellar network',
+            currentBalanceXLM: fundedStatus.balance,
+            hint: 'Use POST /wallets/:id/fund?force=true to fund again (adds more XLM)',
+          });
+        }
+      } catch (_) {
+        // Account doesn't exist yet — proceed with funding
+      }
+    }
+
+    // Fund via Friendbot
+    const fundResult = await stellarSvc.fundWithFriendbot(address);
+
+    // Update wallet record with fundedAt timestamp
+    const now = new Date().toISOString();
+    try {
+      await Database.run('ALTER TABLE users ADD COLUMN IF NOT EXISTS fundedAt TEXT');
+    } catch (_) {
+      // Column may already exist — ignore
+    }
+    await Database.run('UPDATE users SET fundedAt = ? WHERE id = ?', [now, id]);
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        walletId: id,
+        publicKey: address,
+        fundedAmount: '10000',
+        fundedAmountXLM: 10000,
+        network: network || 'testnet',
+        message: 'Wallet successfully funded via Stellar Friendbot',
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+}));
 
 module.exports = router;
