@@ -13,6 +13,7 @@ const express = require('express');
 const router = express.Router();
 const { checkPermission, requireAdmin } = require('../middleware/rbac');
 const { PERMISSIONS } = require('../utils/permissions');
+const { NotFoundError, ValidationError, ERROR_CODES } = require('../utils/errors');
 const LimitService = require('../services/LimitService');
 const Database = require('../utils/database');
 const asyncHandler = require('../utils/asyncHandler');
@@ -363,7 +364,12 @@ router.get('/', checkPermission(PERMISSIONS.WALLETS_READ), cacheMiddleware('wall
 router.get('/:id/balance', checkPermission(PERMISSIONS.WALLETS_READ), walletIdSchema, asyncHandler(async (req, res, next) => {
   try {
     const forceRefresh = req.query.refresh === 'true';
-    const wallet = walletService.getWalletById(req.params.id);
+    const wallet = await walletService.getWalletById(req.params.id);
+    
+    if (!wallet) {
+      throw new NotFoundError('Wallet not found', ERROR_CODES.WALLET_NOT_FOUND);
+    }
+    
     const address = wallet.address || wallet.publicKey;
     const stellarSvc = getStellarService();
 
