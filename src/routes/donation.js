@@ -529,6 +529,7 @@ router.post('/', payloadSizeLimiter(ENDPOINT_LIMITS.singleDonation), donationRat
       apiKeyId: req.apiKey ? req.apiKey.id : null,
       apiKeyRole: req.apiKey ? req.apiKey.role : (req.user?.role || 'user'),
       anonymous: anonymous === true,
+      correlationId: req.id,
     });
 
     // Estimate fee for informational purposes (non-blocking)
@@ -1175,7 +1176,7 @@ router.post('/verify', verificationRateLimiter, checkPermission(PERMISSIONS.DONA
       return res.status(400).json({ success: false, error: { code: 'MISSING_FIELD', message: 'transactionHash is required' } });
     }
 
-    const result = await donationService.verifyTransaction(transactionHash);
+    const result = await donationService.verifyTransaction(transactionHash, req.id);
 
     // Admins can verify any transaction; non-admins must own it
     const isAdmin = req.user && req.user.role === 'admin';

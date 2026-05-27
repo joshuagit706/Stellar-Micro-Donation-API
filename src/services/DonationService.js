@@ -56,9 +56,14 @@ class DonationService {
    * @param {string} transactionHash - Stellar transaction hash
    * @returns {Promise<Object>} Verification result
    */
-  async verifyTransaction(transactionHash) {
+  async verifyTransaction(transactionHash, correlationId = null) {
     if (!transactionHash) {
       throw new ValidationError('Transaction hash is required', null, ERROR_CODES.INVALID_REQUEST);
+    }
+
+    // Set correlation ID on StellarService for this request
+    if (correlationId) {
+      this.stellarService.setCorrelationId(correlationId);
     }
 
     return await this.stellarService.verifyTransaction(transactionHash);
@@ -559,6 +564,7 @@ class DonationService {
     memoEnvelope = null,
     encryptionMetadata = null,
     sdgCategories = [],
+    correlationId = null,
   }) {
     // Sanitize identifiers
     const rawDonor = donor ? sanitizeIdentifier(donor) : 'Anonymous';
@@ -658,6 +664,11 @@ class DonationService {
 
     if (sourceSecret && sanitizedRecipient) {
       if (!sourceAssetProvided) {
+        // Set correlation ID on StellarService for this request
+        if (correlationId) {
+          this.stellarService.setCorrelationId(correlationId);
+        }
+        
         stellarResult = await this.stellarService.sendDonation({
           sourceSecret,
           destinationPublic: sanitizedRecipient,
@@ -669,6 +680,11 @@ class DonationService {
         });
         paymentMethod = 'direct';
       } else {
+        // Set correlation ID on StellarService for this request
+        if (correlationId) {
+          this.stellarService.setCorrelationId(correlationId);
+        }
+        
         const estimate = await this.stellarService.discoverBestPath({
           sourceAsset: normalizedSourceAsset,
           sourceAmount: normalizedSourceAmount.toString(),
