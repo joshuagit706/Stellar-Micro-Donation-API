@@ -82,6 +82,12 @@ const HORIZON_URLS = Object.freeze({
   FUTURENET: 'https://horizon-futurenet.stellar.org',
 });
 
+/**
+ * Stellar amount precision: 1 XLM = 10,000,000 stroops
+ * Use this constant to convert between XLM (user-facing) and stroops (storage).
+ */
+const STROOPS_PER_XLM = 10_000_000;
+
 module.exports = {
   RESPONSE_STATUS,
   DONATION_FREQUENCIES,
@@ -91,4 +97,5 @@ module.exports = {
   STELLAR_NETWORKS,
   VALID_STELLAR_NETWORKS,
   HORIZON_URLS,
+  STROOPS_PER_XLM,
 };
