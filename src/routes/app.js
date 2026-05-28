@@ -494,6 +494,9 @@ app.get('/suspicious-patterns', require('../middleware/rbac').requireAdmin(), (r
 // Geo-rules management (admin only)
 app.use('/admin/geo-rules', geoRulesAdminRoutes);
 
+// System info endpoint (admin only) — Issue #64
+app.use('/admin/system-info', systemInfoRoutes);
+
 // Backup / restore endpoints (admin only) — mounted at /admin so router defines /backup and /backups paths
 app.use('/admin', backupAdminRoutes);
 
