@@ -95,11 +95,11 @@ router.patch(
     try {
       const { id } = req.params;
       const { destination, signedXDR } = req.body;
-      const wallet = await WalletService.getWalletById(id);
+      const wallet = await walletService.getWalletById(id);
       if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
-      const result = await StellarService.submitSignedTransaction(signedXDR);
-      // Optionally log audit here
-      res.status(200).json({ success: true, inflationDestination: destination, result });
+      const stellarService = getStellarService();
+      const result = await stellarService.submitSignedTransaction(signedXDR);
+      res.status(200).json({ success: true, inflationDestination: destination, transactionHash: result.hash });
     } catch (err) {
       next(err);
     }
@@ -114,9 +114,10 @@ router.get(
   asyncHandler(async (req, res, next) => {
     try {
       const { id } = req.params;
-      const wallet = await WalletService.getWalletById(id);
+      const wallet = await walletService.getWalletById(id);
       if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
-      const inflationDestination = await StellarService.getInflationDestination(wallet.address);
+      const stellarService = getStellarService();
+      const inflationDestination = await stellarService.getInflationDestination(wallet.address);
       res.status(200).json({ inflationDestination });
     } catch (err) {
       next(err);
