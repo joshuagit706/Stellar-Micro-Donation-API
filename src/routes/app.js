@@ -27,6 +27,7 @@ const transactionRoutes = require('./transaction');
 const apiKeysRoutes = require('./apiKeys');
 const apiKeyUsageRoutes = require('./apiKeyUsage');
 const recurringDonationRoutes = require('./recurringDonation');
+const disputesRoutes = require('./disputes');
 const channelRoutes = require('./channels');
 const assetRoutes = require('./assets');
 const feesRoutes = require('./fees');
@@ -38,6 +39,7 @@ const systemInfoRoutes = require('./admin/systemInfo');
 const retentionAdminRoutes = require('./admin/retention');
 const retentionService = require('../services/RetentionService');
 const backupAdminRoutes = require('./admin/backup');
+const schedulerAdminRoutes = require('./admin/scheduler');
 const geoRulesAdminRoutes = require('./admin/geoRules');
 const encryptionAdminRoutes = require('./admin/encryption');
 const matchingProgramsAdminRoutes = require('./admin/matchingPrograms');
@@ -64,6 +66,7 @@ const replayDetectionMiddleware = require('../middleware/replayDetection');
 const Database = require('../utils/database');
 const HealthCheckService = require('../services/HealthCheckService');
 const { initializeApiKeysTable } = require('../models/apiKeys');
+const { initializeDefaultStore } = require('../utils/nonceStore');
 const WebhookService = require('../services/WebhookService');
 const { validateRBAC } = require('../utils/rbacValidator');
 const log = require('../utils/log');
@@ -261,6 +264,7 @@ apiV1.use('/wallets', thresholdsRouter);
 apiV1.use('/', recoveryRoutes);
 apiV1.use('/donations', donationRoutes);
 apiV1.use('/donations', require('./receipt'));
+apiV1.use('/donations', disputesRoutes);
 apiV1.use('/donations/recurring', recurringDonationRoutes);
 apiV1.use('/assets', assetRoutes);
 apiV1.use('/stats', statsRoutes);
@@ -497,6 +501,12 @@ app.use('/admin/db', dbAdminRoutes);
 
 // Data retention admin endpoints (admin only)
 app.use('/admin/retention', retentionAdminRoutes);
+
+// Scheduler admin endpoints (admin only)
+app.use('/admin/scheduler', schedulerAdminRoutes);
+
+// Disputes admin endpoints (admin only)
+app.use('/admin/disputes', disputesRoutes);
 
 // Geo-rules management (admin only)
 app.use('/admin/geo-rules', geoRulesAdminRoutes);
@@ -735,6 +745,7 @@ async function startServer() {
         const { runMigrations } = require('../utils/migrationRunner');
         await runMigrations();
         await initializeApiKeysTable();
+        initializeDefaultStore(Database);
 
         const { initializeFeatureFlagsTable, loadFlagsFromEnv } = require('../utils/featureFlags');
         await initializeFeatureFlagsTable();
