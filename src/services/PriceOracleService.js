@@ -25,12 +25,18 @@ let cache = {
 
 /**
  * Fetch rates from CoinGecko (raw HTTP, no extra deps).
+ * Sends the COINGECKO_API_KEY demo-plan header when configured; without a key
+ * CoinGecko still answers but with stricter public rate limits.
  * @returns {Promise<Object>} rates map e.g. { usd: 0.12, eur: 0.11, gbp: 0.09 }
  */
 function fetchFromCoinGecko() {
+  const options = { timeout: 5000 };
+  if (process.env.COINGECKO_API_KEY) {
+    options.headers = { 'x-cg-demo-api-key': process.env.COINGECKO_API_KEY };
+  }
   return new Promise((resolve, reject) => {
     https
-      .get(COINGECKO_URL, { timeout: 5000 }, (res) => {
+      .get(COINGECKO_URL, options, (res) => {
         let body = '';
         res.on('data', (chunk) => (body += chunk));
         res.on('end', () => {
