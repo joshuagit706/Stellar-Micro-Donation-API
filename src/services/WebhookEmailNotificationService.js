@@ -162,7 +162,6 @@ class WebhookEmailNotificationService {
     try {
       // Mask sensitive data before sending
       const maskedUrl = dataMask(webhook.url);
-      const maskedSecret = webhook.secret ? '[REDACTED]' : 'none';
 
       const emailContent = {
         to: webhook.owner_email,

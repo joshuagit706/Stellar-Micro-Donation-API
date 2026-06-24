@@ -8,7 +8,6 @@
  */
 
 const log = require('../utils/log');
-const { dataMask } = require('../utils/dataMasker');
 
 /**
  * Stellar/Horizon result codes mapped to stable client error codes
