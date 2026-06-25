@@ -38,7 +38,8 @@
     "test:load:jest": "jest tests/implement-load-testing-suite.test.js --testTimeout=60000 --forceExit",
     "test:smoke": "jest --config jest.config.smoke.js --forceExit",
     "changelog": "node scripts/generate-changelog.js",
-    "changelog:write": "node scripts/generate-changelog.js --write"
+    "changelog:write": "node scripts/generate-changelog.js --write",
+    "check:no-json-persistence": "node scripts/check-no-json-persistence.js"
   },
   "dependencies": {
     "ajv": "^8.12.0",
