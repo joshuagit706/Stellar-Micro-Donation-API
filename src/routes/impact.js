@@ -17,6 +17,7 @@ const { checkPermission } = require('../middleware/rbac');
 const { PERMISSIONS } = require('../utils/permissions');
 const Transaction = require('../models/transaction');
 const { SDG_CATEGORIES} = require('../services/ImpactMetricService');
+const { serialize: csvSerialize } = require('../utils/csvSerializer');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -143,18 +144,27 @@ router.post('/report/export', requireApiKey, checkPermission(PERMISSIONS.DONATIO
     const totalAmount = txs.reduce((sum, tx) => sum + (parseFloat(tx.amount) || 0), 0);
 
     if (format === 'csv') {
-      const lines = [
-        'SDG Code,Goal,Title,Total Amount (XLM),Donation Count',
-        ...breakdown.map(s =>
-          `${s.code},${s.goal},"${s.title}",${s.totalAmount.toFixed(7)},${s.count}`
-        ),
-        '',
-        `Total,,All SDGs,${totalAmount.toFixed(7)},${txs.length}`,
+      const headers = ['SDG Code', 'Goal', 'Title', 'Total Amount (XLM)', 'Donation Count'];
+      const rows = [
+        ...breakdown.map(s => ({
+          'SDG Code': s.code,
+          'Goal': s.goal,
+          'Title': s.title,
+          'Total Amount (XLM)': s.totalAmount.toFixed(7),
+          'Donation Count': s.count,
+        })),
+        {
+          'SDG Code': 'Total',
+          'Goal': '',
+          'Title': 'All SDGs',
+          'Total Amount (XLM)': totalAmount.toFixed(7),
+          'Donation Count': txs.length,
+        },
       ];
 
       res.setHeader('Content-Type', 'text/csv');
       res.setHeader('Content-Disposition', `attachment; filename="impact-report-${Date.now()}.csv"`);
-      return res.send(lines.join('\n'));
+      return res.send(csvSerialize(headers, rows));
     }
 
     // PDF: return a minimal text-based PDF
